@@ -15,17 +15,13 @@ if TYPE_CHECKING:
 # ContextVar injected by AgentSystem.run() so every AgentActor spawned
 # within a run automatically routes TaskEvents to the RunStream collector.
 # None in plain ActorSystem usage — events are silently dropped (existing behavior).
-_run_event_sink: contextvars.ContextVar[ActorRef | None] = contextvars.ContextVar(
-    "_run_event_sink", default=None
-)
+_run_event_sink: contextvars.ContextVar[ActorRef | None] = contextvars.ContextVar("_run_event_sink", default=None)
 
 # ContextVar tracking the active task_id in the current async context.
 # Set by AgentActor.on_receive() before calling execute(), propagated to
 # child actor tasks via asyncio.create_task() context inheritance.
 # Child agents read this as their parent_task_id for span linking.
-_current_task_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "_current_task_id", default=None
-)
+_current_task_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("_current_task_id", default=None)
 
 
 class RunStream:

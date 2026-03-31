@@ -9,6 +9,7 @@ import pytest
 
 from actor_for_agents.agents import AgentActor, Task, TaskEvent, TaskResult
 from actor_for_agents.agents.system import AgentSystem
+from actor_for_agents.agents.task import StreamEvent, StreamResult
 
 pytestmark = pytest.mark.anyio
 
@@ -45,10 +46,12 @@ class OrchestratorAgent(AgentActor[str, str]):
     """Root agent that dispatches to two child EchoAgents in parallel."""
 
     async def execute(self, input: str) -> str:
-        results: list[TaskResult[str]] = await self.context.dispatch_parallel([
-            (EchoAgent, Task(input=f"{input}-a")),
-            (EchoAgent, Task(input=f"{input}-b")),
-        ])
+        results: list[TaskResult[str]] = await self.context.dispatch_parallel(
+            [
+                (EchoAgent, Task(input=f"{input}-a")),
+                (EchoAgent, Task(input=f"{input}-b")),
+            ]
+        )
         return "+".join(r.output for r in results)
 
 
@@ -312,9 +315,7 @@ async def test_span_tree_is_reconstructable():
     task_ids = {e.task_id for e in events}
     for event in events:
         if event.parent_task_id is not None:
-            assert event.parent_task_id in task_ids, (
-                f"parent_task_id {event.parent_task_id!r} not found among task_ids"
-            )
+            assert event.parent_task_id in task_ids, f"parent_task_id {event.parent_task_id!r} not found among task_ids"
 
 
 # ---------------------------------------------------------------------------
@@ -348,4 +349,108 @@ async def test_agent_system_backend_param_ignored():
     system = AgentSystem()
     ref = await system.spawn(Noop, "noop", backend="local")
     assert ref.is_alive
+    await system.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# ask_stream — streaming ask to an already-spawned agent
+# ---------------------------------------------------------------------------
+
+
+async def test_ask_stream_yields_started_and_completed():
+    """ask_stream yields StreamEvents then a final StreamResult."""
+    system = AgentSystem()
+    ref = await system.spawn(EchoAgent, "echo")
+
+    items = []
+    async for item in ref.ask_stream(Task(input="hi")):
+        items.append(item)
+
+    events = [i.event for i in items if isinstance(i, StreamEvent)]
+    results = [i.result for i in items if isinstance(i, StreamResult)]
+
+    assert any(e.type == "task_started" for e in events)
+    assert any(e.type == "task_completed" for e in events)
+    assert len(results) == 1
+    assert results[0].output == "hi"
+    assert isinstance(items[-1], StreamResult)
+    await system.shutdown()
+
+
+async def test_ask_stream_yields_progress_events():
+    """ask_stream captures emit_progress() calls from execute()."""
+    system = AgentSystem()
+    ref = await system.spawn(ProgressAgent, "prog")
+
+    events: list[TaskEvent] = []
+    async for item in ref.ask_stream(Task(input="x")):
+        match item:
+            case StreamEvent(event=e):
+                events.append(e)
+
+    progress = [e for e in events if e.type == "task_progress"]
+    assert len(progress) == 2
+    assert [e.data for e in progress] == ["step-1", "step-2"]
+    await system.shutdown()
+
+
+async def test_ask_stream_reraises_agent_error():
+    """ask_stream propagates exceptions raised by execute()."""
+    system = AgentSystem()
+    ref = await system.spawn(BrokenAgent, "broken")
+
+    with pytest.raises(ValueError, match="boom"):
+        async for _ in ref.ask_stream(Task(input="x")):
+            pass
+
+    await system.shutdown()
+
+
+async def test_ask_stream_child_events_included():
+    """Children spawned via dispatch() during ask_stream inherit the sink."""
+    system = AgentSystem()
+    ref = await system.spawn(OrchestratorAgent, "orch")
+
+    events: list[TaskEvent] = []
+    async for item in ref.ask_stream(Task(input="q")):
+        if isinstance(item, StreamEvent):
+            events.append(item.event)
+
+    # Root agent has no parent_agent_path; children do
+    root_events = [e for e in events if e.parent_agent_path is None]
+    child_events = [e for e in events if e.parent_agent_path is not None]
+    assert len(root_events) > 0
+    assert len(child_events) > 0
+    # Child paths are under the orchestrator
+    assert all("orch" in e.agent_path for e in child_events)
+    await system.shutdown()
+
+
+async def test_ask_stream_no_orphaned_collector():
+    """Collector actor is cleaned up after ask_stream completes."""
+    system = AgentSystem()
+    ref = await system.spawn(EchoAgent, "echo2")
+
+    async for _ in ref.ask_stream(Task(input="x")):
+        pass
+
+    await asyncio.sleep(0.05)
+    # Only the spawned agent remains; collector was removed
+    collector_cells = [k for k in system._root_cells if "_ask-collector-" in k]
+    assert collector_cells == []
+    await system.shutdown()
+
+
+async def test_ask_stream_reusable_ref():
+    """The same ref can be used for multiple sequential ask_stream calls."""
+    system = AgentSystem()
+    ref = await system.spawn(ProgressAgent, "prog2")
+
+    for expected_input in ("first", "second"):
+        items = []
+        async for item in ref.ask_stream(Task(input=expected_input)):
+            items.append(item)
+        result = next(i.result for i in items if isinstance(i, StreamResult))
+        assert result.output == f"done:{expected_input}"
+
     await system.shutdown()
