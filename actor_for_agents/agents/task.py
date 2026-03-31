@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Generic, TypeVar
 from uuid import uuid4
+
+I = TypeVar("I")  # input type
+O = TypeVar("O")  # output type
 
 
 class TaskStatus(Enum):
@@ -17,27 +20,38 @@ class TaskStatus(Enum):
 
 
 @dataclass
-class Task:
+class Task(Generic[I]):
     """A unit of work sent to an AgentActor.
 
     Args:
         input: The input data for the agent.
         id: Unique task identifier. Auto-generated if not provided.
+
+    Example::
+
+        task: Task[str] = Task(input="summarize this")
+        task: Task[dict] = Task(input={"query": "actor model", "limit": 5})
     """
 
-    input: Any
+    input: I
     id: str = field(default_factory=lambda: uuid4().hex)
 
 
 @dataclass
-class TaskResult:
+class TaskResult(Generic[O]):
     """The outcome of a task execution.
 
     Returned by AgentActor.on_receive() after execute() completes.
+    The type parameter ``O`` matches the return type of execute().
+
+    Example::
+
+        result: TaskResult[str] = await ref.ask(Task(input="..."))
+        output: str = result.output
     """
 
     task_id: str
-    output: Any = None
+    output: O | None = None
     error: str | None = None
     status: TaskStatus = TaskStatus.COMPLETED
 
@@ -72,7 +86,7 @@ class ActorConfig:
         class SearchAgent:
             __actor__ = ActorConfig(mailbox_size=64, max_restarts=5)
 
-            async def execute(self, input): ...
+            async def execute(self, input: str) -> list[str]: ...
     """
 
     mailbox_size: int = 256
