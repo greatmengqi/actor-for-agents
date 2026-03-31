@@ -55,6 +55,54 @@ class ActorContext:
         """Spawn a child actor supervised by this actor."""
         return await self._cell.spawn_child(actor_cls, name, mailbox_size=mailbox_size, middlewares=middlewares)
 
+    async def dispatch(
+        self,
+        target: type[Actor[MsgT, RetT]] | ActorRef[MsgT, RetT],
+        message: MsgT,
+        *,
+        timeout: float = 300.0,
+    ) -> RetT:
+        """Spawn an ephemeral child actor (or reuse an existing ref), send one message, return result.
+
+        ``target`` can be:
+
+        - An ``Actor`` subclass — a new child actor is spawned, used once, then stopped.
+        - An ``ActorRef`` — the message is sent to the already-running actor.
+
+        Type parameters are inferred from ``target``::
+
+            result: str = await ctx.dispatch(EchoActor, "hello")
+
+        This is a low-level primitive. For agent-to-agent calls with automatic
+        ``Task`` wrapping, use ``AgentActor.dispatch()`` instead.
+        """
+        import uuid
+
+        if isinstance(target, type):
+            name = f"{target.__name__.lower()}-{uuid.uuid4().hex[:8]}"
+            ref = await self.spawn(target, name)
+            try:
+                return await ref.ask(message, timeout=timeout)
+            finally:
+                ref.stop()
+        else:
+            return await target.ask(message, timeout=timeout)
+
+    async def dispatch_parallel(
+        self,
+        tasks: list[tuple[type[Actor[Any, Any]] | ActorRef[Any, Any], Any]],
+        *,
+        timeout: float = 300.0,
+    ) -> list[Any]:
+        """Dispatch multiple messages concurrently and collect results in order.
+
+        Each entry is a ``(target, message)`` pair. Results preserve task order.
+        If any task raises, the exception propagates immediately.
+        """
+        import asyncio
+
+        return list(await asyncio.gather(*[self.dispatch(t, msg, timeout=timeout) for t, msg in tasks]))
+
     async def run_in_executor(self, fn: Callable[..., Any], *args: Any) -> Any:
         """Run a blocking function in the system's thread pool.
 

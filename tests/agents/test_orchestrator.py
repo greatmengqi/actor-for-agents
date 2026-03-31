@@ -1,4 +1,4 @@
-"""Tests for OrchestratorActor (M2)."""
+"""Tests for ActorContext.dispatch / dispatch_parallel (M2)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import pytest
 
 from actor_for_agents import ActorSystem
 from actor_for_agents.agents import AgentActor, Task, TaskResult
-from actor_for_agents.agents.orchestrator import OrchestratorActor
 
 pytestmark = pytest.mark.anyio
 
@@ -53,70 +52,73 @@ class DelayedAgent(AgentActor[str, str]):
 
 
 async def test_dispatch_returns_output():
-    class SimpleOrchestrator(OrchestratorActor[str, str]):
+    class SimpleAgent(AgentActor[str, str]):
         async def execute(self, input: str) -> str:
-            return await self.dispatch(EchoAgent, input)
+            result: TaskResult[str] = await self.context.dispatch(EchoAgent, Task(input=input))
+            return result.output
 
     system = ActorSystem("t")
-    ref = await system.spawn(SimpleOrchestrator, "orch")
+    ref = await system.spawn(SimpleAgent, "a")
     result = await ref.ask(Task(input="hello"))
     assert result.output == "hello"
     await system.shutdown()
 
 
 async def test_dispatch_exception_propagates():
-    class BrokenOrchestrator(OrchestratorActor[str, str]):
+    class BrokenCaller(AgentActor[str, str]):
         async def execute(self, input: str) -> str:
-            return await self.dispatch(BrokenAgent, input)
+            result: TaskResult[str] = await self.context.dispatch(BrokenAgent, Task(input=input))
+            return result.output
 
     system = ActorSystem("t")
-    ref = await system.spawn(BrokenOrchestrator, "orch")
+    ref = await system.spawn(BrokenCaller, "a")
     with pytest.raises(Exception, match="boom: bad"):
         await ref.ask(Task(input="bad"))
     await system.shutdown()
 
 
 async def test_dispatch_multiple_sequential_calls():
-    """Same orchestrator can dispatch same class multiple times (unique names)."""
+    """dispatch() can be called multiple times with the same class (unique names)."""
 
-    class MultiOrchestrator(OrchestratorActor[list, list]):
+    class MultiCaller(AgentActor[list, list]):
         async def execute(self, input: list) -> list:
             results = []
             for item in input:
-                results.append(await self.dispatch(EchoAgent, item))
+                r: TaskResult[str] = await self.context.dispatch(EchoAgent, Task(input=item))
+                results.append(r.output)
             return results
 
     system = ActorSystem("t")
-    ref = await system.spawn(MultiOrchestrator, "orch")
+    ref = await system.spawn(MultiCaller, "a")
     result = await ref.ask(Task(input=["a", "b", "c"]))
     assert result.output == ["a", "b", "c"]
     await system.shutdown()
 
 
 async def test_dispatch_child_stopped_after_completion():
-    """Dispatched child is stopped after task completes (no child leaks)."""
+    """Ephemeral child is stopped and removed after dispatch completes."""
 
-    class EphemeralOrchestrator(OrchestratorActor[str, str]):
+    class EphemeralCaller(AgentActor[str, str]):
         async def execute(self, input: str) -> str:
-            result = await self.dispatch(EchoAgent, input)
+            r: TaskResult[str] = await self.context.dispatch(EchoAgent, Task(input=input))
             await asyncio.sleep(0.05)  # let stop propagate
             assert len(self.context.children) == 0, "child should be stopped and removed"
-            return result
+            return r.output
 
     system = ActorSystem("t")
-    ref = await system.spawn(EphemeralOrchestrator, "orch")
+    ref = await system.spawn(EphemeralCaller, "a")
     result = await ref.ask(Task(input="x"))
     assert result.output == "x"
     await system.shutdown()
 
 
 async def test_dispatch_child_stopped_on_exception():
-    """Dispatched child is stopped even when execute() raises."""
+    """Ephemeral child is stopped even when execute() raises."""
 
-    class CleanupOrchestrator(OrchestratorActor[str, str]):
+    class CleanupCaller(AgentActor[str, str]):
         async def execute(self, input: str) -> str:
             try:
-                await self.dispatch(BrokenAgent, input)
+                await self.context.dispatch(BrokenAgent, Task(input=input))
             except Exception:
                 pass
             await asyncio.sleep(0.05)
@@ -124,19 +126,22 @@ async def test_dispatch_child_stopped_on_exception():
             return "recovered"
 
     system = ActorSystem("t")
-    ref = await system.spawn(CleanupOrchestrator, "orch")
+    ref = await system.spawn(CleanupCaller, "a")
     result = await ref.ask(Task(input="x"))
     assert result.output == "recovered"
     await system.shutdown()
 
 
 async def test_dispatch_timeout_raises():
-    class SlowOrchestrator(OrchestratorActor[str, str]):
+    class SlowCaller(AgentActor[str, str]):
         async def execute(self, input: str) -> str:
-            return await self.dispatch(SlowAgent, input, timeout=0.1)
+            result: TaskResult[str] = await self.context.dispatch(
+                SlowAgent, Task(input=input), timeout=0.1
+            )
+            return result.output
 
     system = ActorSystem("t")
-    ref = await system.spawn(SlowOrchestrator, "orch")
+    ref = await system.spawn(SlowCaller, "a")
     with pytest.raises(asyncio.TimeoutError):
         await ref.ask(Task(input="x"), timeout=5.0)
     await system.shutdown()
@@ -148,54 +153,58 @@ async def test_dispatch_timeout_raises():
 
 
 async def test_dispatch_parallel_returns_ordered_results():
-    class ParallelOrchestrator(OrchestratorActor[list, list]):
+    class ParallelCaller(AgentActor[list, list]):
         async def execute(self, input: list) -> list:
-            return await self.dispatch_parallel([(EchoAgent, v) for v in input])
+            results: list[TaskResult[str]] = await self.context.dispatch_parallel(
+                [(EchoAgent, Task(input=v)) for v in input]
+            )
+            return [r.output for r in results]
 
     system = ActorSystem("t")
-    ref = await system.spawn(ParallelOrchestrator, "orch")
+    ref = await system.spawn(ParallelCaller, "a")
     result = await ref.ask(Task(input=["x", "y", "z"]))
     assert result.output == ["x", "y", "z"]
     await system.shutdown()
 
 
 async def test_dispatch_parallel_different_agent_types():
-    class MixedOrchestrator(OrchestratorActor[str, list]):
+    class MixedCaller(AgentActor[str, list]):
         async def execute(self, input: str) -> list:
-            return await self.dispatch_parallel([
-                (EchoAgent, input),
-                (UpperAgent, input),
+            results = await self.context.dispatch_parallel([
+                (EchoAgent, Task(input=input)),
+                (UpperAgent, Task(input=input)),
             ])
+            return [r.output for r in results]
 
     system = ActorSystem("t")
-    ref = await system.spawn(MixedOrchestrator, "orch")
+    ref = await system.spawn(MixedCaller, "a")
     result = await ref.ask(Task(input="hello"))
     assert result.output == ["hello", "HELLO"]
     await system.shutdown()
 
 
 async def test_dispatch_parallel_empty_list():
-    class EmptyOrchestrator(OrchestratorActor[Any, list]):
+    class EmptyCaller(AgentActor[Any, list]):
         async def execute(self, input: Any) -> list:
-            return await self.dispatch_parallel([])
+            return await self.context.dispatch_parallel([])
 
     system = ActorSystem("t")
-    ref = await system.spawn(EmptyOrchestrator, "orch")
+    ref = await system.spawn(EmptyCaller, "a")
     result = await ref.ask(Task(input=None))
     assert result.output == []
     await system.shutdown()
 
 
 async def test_dispatch_parallel_exception_propagates():
-    class FailingOrchestrator(OrchestratorActor[str, list]):
+    class FailingCaller(AgentActor[str, list]):
         async def execute(self, input: str) -> list:
-            return await self.dispatch_parallel([
-                (EchoAgent, "ok"),
-                (BrokenAgent, "bad"),
+            return await self.context.dispatch_parallel([
+                (EchoAgent, Task(input="ok")),
+                (BrokenAgent, Task(input="bad")),
             ])
 
     system = ActorSystem("t")
-    ref = await system.spawn(FailingOrchestrator, "orch")
+    ref = await system.spawn(FailingCaller, "a")
     with pytest.raises(Exception, match="boom: bad"):
         await ref.ask(Task(input="x"))
     await system.shutdown()
@@ -204,16 +213,17 @@ async def test_dispatch_parallel_exception_propagates():
 async def test_dispatch_parallel_is_concurrent():
     """Parallel dispatch completes in ~1x delay, not N×delay."""
 
-    class ConcurrentOrchestrator(OrchestratorActor[str, list]):
+    class ConcurrentCaller(AgentActor[str, list]):
         async def execute(self, input: str) -> list:
-            return await self.dispatch_parallel([
-                (DelayedAgent, "a"),
-                (DelayedAgent, "b"),
-                (DelayedAgent, "c"),
+            results = await self.context.dispatch_parallel([
+                (DelayedAgent, Task(input="a")),
+                (DelayedAgent, Task(input="b")),
+                (DelayedAgent, Task(input="c")),
             ])
+            return [r.output for r in results]
 
     system = ActorSystem("t")
-    ref = await system.spawn(ConcurrentOrchestrator, "orch")
+    ref = await system.spawn(ConcurrentCaller, "a")
     start = time.monotonic()
     result = await ref.ask(Task(input="x"), timeout=5.0)
     elapsed = time.monotonic() - start
@@ -223,26 +233,69 @@ async def test_dispatch_parallel_is_concurrent():
 
 
 # ---------------------------------------------------------------------------
-# Nested orchestration
+# dispatch to existing ActorRef
 # ---------------------------------------------------------------------------
 
 
-async def test_orchestrator_can_dispatch_other_orchestrator():
-    """OrchestratorActor can be a child of another OrchestratorActor."""
+async def test_dispatch_to_existing_ref():
+    """dispatch() with an ActorRef reuses the running actor instead of spawning."""
+    system = ActorSystem("t")
+    existing = await system.spawn(EchoAgent, "persistent")
 
-    class InnerOrchestrator(OrchestratorActor[str, list]):
+    class ReusingAgent(AgentActor[str, str]):
+        async def execute(self, input: str) -> str:
+            r: TaskResult[str] = await self.context.dispatch(existing, Task(input=input))
+            return r.output
+
+    ref = await system.spawn(ReusingAgent, "reuser")
+    result = await ref.ask(Task(input="hello"))
+    assert result.output == "hello"
+    assert existing.is_alive  # not stopped — caller owns the lifecycle
+    await system.shutdown()
+
+
+async def test_dispatch_parallel_mix_class_and_ref():
+    """dispatch_parallel() accepts a mix of class targets and ActorRef targets."""
+    system = ActorSystem("t")
+    persistent = await system.spawn(UpperAgent, "upper")
+
+    class MixedAgent(AgentActor[str, list]):
         async def execute(self, input: str) -> list:
-            return await self.dispatch_parallel([
-                (EchoAgent, input + "-1"),
-                (EchoAgent, input + "-2"),
+            results = await self.context.dispatch_parallel([
+                (EchoAgent, Task(input=input)),
+                (persistent, Task(input=input)),
             ])
+            return [r.output for r in results]
 
-    class OuterOrchestrator(OrchestratorActor[str, list]):
+    ref = await system.spawn(MixedAgent, "mixer")
+    result = await ref.ask(Task(input="hi"))
+    assert result.output == ["hi", "HI"]
+    await system.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Nested dispatch
+# ---------------------------------------------------------------------------
+
+
+async def test_nested_dispatch():
+    """An AgentActor can dispatch to another AgentActor that also dispatches."""
+
+    class InnerAgent(AgentActor[str, list]):
         async def execute(self, input: str) -> list:
-            return await self.dispatch(InnerOrchestrator, input)
+            results = await self.context.dispatch_parallel([
+                (EchoAgent, Task(input=input + "-1")),
+                (EchoAgent, Task(input=input + "-2")),
+            ])
+            return [r.output for r in results]
+
+    class OuterAgent(AgentActor[str, list]):
+        async def execute(self, input: str) -> list:
+            r: TaskResult[list] = await self.context.dispatch(InnerAgent, Task(input=input))
+            return r.output
 
     system = ActorSystem("t")
-    ref = await system.spawn(OuterOrchestrator, "outer")
+    ref = await system.spawn(OuterAgent, "outer")
     result = await ref.ask(Task(input="x"), timeout=5.0)
     assert result.output == ["x-1", "x-2"]
     await system.shutdown()
