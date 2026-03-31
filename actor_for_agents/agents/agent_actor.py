@@ -48,6 +48,7 @@ class AgentActor(Actor[Task[InputT], TaskResult[OutputT]], Generic[InputT, Outpu
         super().__init__()
         self._current_task_id: str | None = None
         self._current_parent_task_id: str | None = None  # span link; set per on_receive call
+        self._active_sink: ActorRef | None = None  # effective sink for the current on_receive call
         # Read from ContextVar set by AgentSystem.run() — propagates automatically
         # to all child actors via asyncio task context inheritance.
         # None in plain ActorSystem usage — events are silently dropped.
@@ -109,11 +110,16 @@ class AgentActor(Actor[Task[InputT], TaskResult[OutputT]], Generic[InputT, Outpu
                 "Wrap your input: ref.ask(Task(input=your_data))"
             )
 
-        from actor_for_agents.agents.run_stream import _current_task_id_var
+        from actor_for_agents.agents.run_stream import _current_task_id_var, _run_event_sink
 
         # Capture parent span before overwriting the ContextVar
         self._current_parent_task_id = _current_task_id_var.get()
         token = _current_task_id_var.set(message.id)
+
+        # Per-ask sink (event_sink_ref) overrides actor-level sink (_event_sink).
+        # Set the ContextVar so child actors spawned during execute() inherit the sink.
+        self._active_sink = message.event_sink_ref or self._event_sink
+        sink_token = _run_event_sink.set(self._active_sink)
 
         # Parent agent path: dispatch() makes the caller the supervision parent
         parent = self.context.parent
@@ -158,8 +164,10 @@ class AgentActor(Actor[Task[InputT], TaskResult[OutputT]], Generic[InputT, Outpu
         finally:
             self._current_task_id = None
             self._current_parent_task_id = None
+            self._active_sink = None
             _current_task_id_var.reset(token)
+            _run_event_sink.reset(sink_token)
 
     async def _emit_event(self, event: TaskEvent) -> None:
-        if self._event_sink is not None:
-            await self._event_sink.tell(event)
+        if self._active_sink is not None:
+            await self._active_sink.tell(event)
