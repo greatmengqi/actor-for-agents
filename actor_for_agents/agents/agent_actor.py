@@ -3,30 +3,36 @@
 from __future__ import annotations
 
 import warnings
-from typing import TYPE_CHECKING, Any
+from abc import abstractmethod
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from actor_for_agents.actor import Actor
 from actor_for_agents.agents.task import Task, TaskEvent, TaskResult, TaskStatus
+
+I = TypeVar("I")
+O = TypeVar("O")
 
 if TYPE_CHECKING:
     from actor_for_agents.ref import ActorRef
 
 
-class AgentActor(Actor):
+class AgentActor(Actor[Task[I]], Generic[I, O]):
     """Full-power agent actor (Level 4).
+
+    Type parameters::
+
+        I — input type  (the type of Task.input and execute()'s argument)
+        O — output type (the return type of execute() and TaskResult.output)
 
     Override ``execute()`` to implement agent logic.
     Optionally override ``on_started()``, ``on_stopped()``, ``on_restart()``.
     Do NOT override ``on_receive()`` — it is managed by the framework.
 
-    Events (``task_started``, ``task_progress``, ``task_completed``, ``task_failed``)
-    are emitted automatically. Attach a ``RunStream`` via AgentSystem to consume them.
-
     Example::
 
-        class SummaryAgent(AgentActor):
+        class SummaryAgent(AgentActor[str, str]):
             async def execute(self, input: str) -> str:
-                chunks = []
+                chunks: list[str] = []
                 async for chunk in llm.stream(input):
                     await self.emit_progress(chunk)
                     chunks.append(chunk)
@@ -34,8 +40,8 @@ class AgentActor(Actor):
 
         system = ActorSystem("app")
         ref = await system.spawn(SummaryAgent, "summarizer")
-        result = await ref.ask(Task(input="..."))
-        print(result.output)
+        result: TaskResult[str] = await ref.ask(Task(input="long document..."))
+        output: str = result.output
     """
 
     def __init__(self) -> None:
@@ -58,13 +64,13 @@ class AgentActor(Actor):
     # Public API — override these
     # ------------------------------------------------------------------
 
-    async def execute(self, input: Any) -> Any:
+    @abstractmethod
+    async def execute(self, input: I) -> O:
         """Implement agent logic here. Return value becomes TaskResult.output.
 
         Raise any exception to signal failure — the framework emits
         ``task_failed`` and supervision handles the restart.
         """
-        raise NotImplementedError(f"{type(self).__name__} must implement execute()")
 
     async def emit_progress(self, data: Any) -> None:
         """Emit a ``task_progress`` event during execute().
@@ -86,7 +92,7 @@ class AgentActor(Actor):
     # Framework-managed — do not override
     # ------------------------------------------------------------------
 
-    async def on_receive(self, message: Task) -> TaskResult:
+    async def on_receive(self, message: Task[I]) -> TaskResult[O]:
         if not isinstance(message, Task):
             raise TypeError(
                 f"{type(self).__name__} expects Task, got {type(message).__name__}. "
@@ -101,7 +107,7 @@ class AgentActor(Actor):
         ))
         try:
             output = await self.execute(message.input)
-            result = TaskResult(task_id=message.id, output=output, status=TaskStatus.COMPLETED)
+            result: TaskResult[O] = TaskResult(task_id=message.id, output=output, status=TaskStatus.COMPLETED)
             await self._emit_event(TaskEvent(
                 type="task_completed",
                 task_id=message.id,
