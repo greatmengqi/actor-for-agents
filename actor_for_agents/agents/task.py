@@ -65,12 +65,17 @@ class TaskEvent:
         - ``task_progress``  — intermediate update via emit_progress()
         - ``task_completed`` — execute() returned successfully
         - ``task_failed``    — execute() raised an exception
+
+    ``parent_task_id`` links this event to the calling agent's task,
+    enabling trace reconstruction (e.g. Gantt charts, OpenTelemetry spans).
+    None for the root agent of a run.
     """
 
     type: str
     task_id: str
     agent_path: str
     data: Any = None
+    parent_task_id: str | None = None
 
 
 @dataclass
