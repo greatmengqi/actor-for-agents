@@ -18,7 +18,7 @@ The agent layer has 5 levels. Start at the lowest level you need — upgrading l
             return await web_search(input)
     ```
 
-    Works with `AgentSystem` (coming in M3).
+    Works with `AgentSystem`.
 
 === "Level 2 — lifecycle hooks"
 
