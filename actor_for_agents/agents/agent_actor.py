@@ -47,9 +47,13 @@ class AgentActor(Actor[Task[InputT], TaskResult[OutputT]], Generic[InputT, Outpu
     def __init__(self) -> None:
         super().__init__()
         self._current_task_id: str | None = None
-        # Injected by AgentSystem (M3) to route TaskEvents to a RunStream.
+        self._current_parent_task_id: str | None = None  # span link; set per on_receive call
+        # Read from ContextVar set by AgentSystem.run() — propagates automatically
+        # to all child actors via asyncio task context inheritance.
         # None in plain ActorSystem usage — events are silently dropped.
-        self._event_sink: ActorRef | None = None
+        from actor_for_agents.agents.run_stream import _run_event_sink
+
+        self._event_sink: ActorRef | None = _run_event_sink.get()
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -88,6 +92,7 @@ class AgentActor(Actor[Task[InputT], TaskResult[OutputT]], Generic[InputT, Outpu
                 task_id=self._current_task_id,
                 agent_path=self.context.self_ref.path,
                 data=data,
+                parent_task_id=self._current_parent_task_id,
             )
         )
 
@@ -102,12 +107,19 @@ class AgentActor(Actor[Task[InputT], TaskResult[OutputT]], Generic[InputT, Outpu
                 "Wrap your input: ref.ask(Task(input=your_data))"
             )
 
+        from actor_for_agents.agents.run_stream import _current_task_id_var
+
+        # Capture parent span before overwriting the ContextVar
+        self._current_parent_task_id = _current_task_id_var.get()
+        token = _current_task_id_var.set(message.id)
+
         self._current_task_id = message.id
         await self._emit_event(
             TaskEvent(
                 type="task_started",
                 task_id=message.id,
                 agent_path=self.context.self_ref.path,
+                parent_task_id=self._current_parent_task_id,
             )
         )
         try:
@@ -119,6 +131,7 @@ class AgentActor(Actor[Task[InputT], TaskResult[OutputT]], Generic[InputT, Outpu
                     task_id=message.id,
                     agent_path=self.context.self_ref.path,
                     data=output,
+                    parent_task_id=self._current_parent_task_id,
                 )
             )
             return result
@@ -129,11 +142,14 @@ class AgentActor(Actor[Task[InputT], TaskResult[OutputT]], Generic[InputT, Outpu
                     task_id=message.id,
                     agent_path=self.context.self_ref.path,
                     data=str(exc),
+                    parent_task_id=self._current_parent_task_id,
                 )
             )
             raise
         finally:
             self._current_task_id = None
+            self._current_parent_task_id = None
+            _current_task_id_var.reset(token)
 
     async def _emit_event(self, event: TaskEvent) -> None:
         if self._event_sink is not None:
