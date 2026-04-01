@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from dataclasses import dataclass
+from enum import Enum, auto
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, Union
 
 from actor_for_agents.supervision import OneForOneStrategy, SupervisorStrategy
+
+DEFAULT_MAILBOX_SIZE = 256
 
 if TYPE_CHECKING:
     from actor_for_agents.ref import ActorRef
@@ -13,6 +18,36 @@ if TYPE_CHECKING:
 # Message and return type variables — use Actor[MyMsg, MyReturn] for typed actors
 MsgT = TypeVar("MsgT")
 RetT = TypeVar("RetT")
+
+
+# ---------------------------------------------------------------------------
+# Stop Policy ADT — defines when an actor stops itself automatically
+# ---------------------------------------------------------------------------
+
+
+class StopMode(Enum):
+    """Built-in stop modes for actors."""
+
+    NEVER = auto()  # Never auto-stop (default)
+    ONE_TIME = auto()  # Stop after processing one message
+
+
+@dataclass
+class AfterMessage:
+    """Stop after receiving a specific message."""
+
+    message: Any  # The message that triggers stop
+
+
+@dataclass
+class AfterIdle:
+    """Stop after being idle (no messages processed) for N seconds."""
+
+    seconds: float  # Idle timeout in seconds
+
+
+# Union type for all stop policies
+StopPolicy = Union[StopMode, AfterMessage, AfterIdle]
 
 
 class ActorContext:
@@ -54,6 +89,19 @@ class ActorContext:
     ) -> ActorRef[MsgT, RetT]:
         """Spawn a child actor supervised by this actor."""
         return await self._cell.spawn_child(actor_cls, name, mailbox_size=mailbox_size, middlewares=middlewares)
+
+    async def stop_self(self) -> None:
+        """Stop this actor (self) and remove from parent's children.
+
+        Equivalent to Akka's context.stop(self).
+
+        Use when an actor decides its own work is done and should shut down::
+
+            async def on_receive(self, message):
+                if message == "done":
+                    await self.context.stop_self()
+        """
+        self._cell.request_stop()
 
     async def ask(
         self,
@@ -338,3 +386,99 @@ class Actor(Generic[MsgT, RetT]):
         Default: OneForOne, up to 3 restarts per 60 seconds, always restart.
         """
         return OneForOneStrategy()
+
+    def stop_policy(self) -> StopPolicy:
+        """Override to define when this actor stops itself automatically.
+
+        Default: NEVER (never auto-stop).
+
+        Examples::
+
+            # One-time actor: stops after processing first message
+            def stop_policy(self) -> StopPolicy:
+                return StopMode.ONE_TIME
+
+            # Stop after receiving "shutdown" message
+            def stop_policy(self) -> StopPolicy:
+                return AfterMessage(message="shutdown")
+
+            # Stop after 60 seconds of idle time
+            def stop_policy(self) -> StopPolicy:
+                return AfterIdle(seconds=60.0)
+        """
+        return StopMode.NEVER
+
+    # -------------------------------------------------------------------------
+    # Syntax sugar — delegate to context
+    # -------------------------------------------------------------------------
+
+    async def ask(
+        self,
+        target: type[Actor[Any, Any]] | ActorRef[Any, Any] | str,
+        message: Any,
+        *,
+        timeout: float = 300.0,
+        name: str | None = None,
+    ) -> Any:
+        """Ask an actor (or spawn a temporary one) and wait for reply.
+
+        target can be:
+        - Actor class: spawn temporary actor, use once, auto-stop
+        - ActorRef: send to existing actor
+        - str (path): find actor by path and ask it
+        """
+        if isinstance(target, str):
+            system = self.context._cell.system
+            ref = await system.get_actor(target)
+            if ref is None:
+                raise ValueError(f"Actor not found: {target}")
+            return await ref.ask(message, timeout=timeout)
+        return await self.context.ask(target, message, timeout=timeout, name=name)
+
+    async def tell(self, target: type[Actor[Any, Any]] | ActorRef[Any, Any] | str, message: Any) -> None:
+        """Send a fire-and-forget message to an actor.
+
+        target can be:
+        - Actor class: spawn temporary actor, tell message, auto-stop
+        - ActorRef: send to existing actor
+        - str (path): find actor by path and send
+
+        Raises:
+            TypeError: if target is an Actor class with stop_policy == NEVER
+        """
+        if isinstance(target, type):
+            # Check stop_policy to prevent actor leaks
+            policy = target().stop_policy()
+            if isinstance(policy, StopMode) and policy == StopMode.NEVER:
+                raise TypeError(
+                    "tell() requires an actor with a non-NEVER stop_policy. "
+                    "Use StopMode.ONE_TIME, AfterMessage, or AfterIdle instead."
+                )
+            # Spawn actor (its stop_policy determines auto-stop behavior)
+            actor_name = f"temp-{uuid.uuid4().hex[:8]}"
+            ref = await self.context._cell.spawn_child(
+                target, actor_name, mailbox_size=DEFAULT_MAILBOX_SIZE, middlewares=None
+            )
+            await ref.tell(message)
+        elif isinstance(target, str):
+            system = self.context._cell.system
+            ref = await system.get_actor(target)
+            if ref is None:
+                raise ValueError(f"Actor not found: {target}")
+            await ref.tell(message)
+        else:
+            await target.tell(message)
+
+    async def spawn(
+        self,
+        actor_cls: type[Actor[Any, Any]],
+        name: str,
+        *,
+        mailbox_size: int | None = None,
+    ) -> ActorRef[Any, Any]:
+        """Spawn a child actor."""
+        return await self.context.spawn(actor_cls, name, mailbox_size=mailbox_size)
+
+    async def stop_self(self) -> None:
+        """Stop this actor (self) and remove from parent's children."""
+        await self.context.stop_self()
