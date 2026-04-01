@@ -20,12 +20,17 @@ from actor_for_agents.actor import Actor, ActorContext, AfterIdle, AfterMessage,
 from actor_for_agents.agents.system import AgentSystem
 from actor_for_agents.frees import Free, FlatMap, Pure, Suspend, lift_free, run_free
 from actor_for_agents.actor_f import (
-    ActorF, AskF, SpawnF, StopF, TellF,
+    ActorF,
+    AskF,
+    SpawnF,
+    StopF,
+    TellF,
     ask,
     get_ref,
     spawn,
     stop,
-    tell, tell_direct,
+    tell,
+    tell_direct,
 )
 from actor_for_agents.interpreter import MockInterpreter, MockRef, MockSystem, run_free_mock
 from actor_for_agents.mailbox import Mailbox, MemoryMailbox

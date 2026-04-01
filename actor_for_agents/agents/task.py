@@ -178,9 +178,7 @@ class TaskResult(Generic[OutputT]):
         """Applicative pure — wraps a value in a successful TaskResult."""
         return cls(task_id=task_id or uuid4().hex, output=value, status=TaskStatus.COMPLETED)
 
-    def apply(
-        self, f: Callable[[OutputT], P]
-    ) -> "TaskResult[P]":
+    def apply(self, f: Callable[[OutputT], P]) -> "TaskResult[P]":
         """Applicative ap — applies a wrapped function to this result.
 
         Equivalent to self.map(f), kept for Applicative consistency.

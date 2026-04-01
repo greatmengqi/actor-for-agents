@@ -244,17 +244,13 @@ class MockInterpreter:
             raise RuntimeError(f"Unknown ActorF operation: {type(op).__name__}")
 
 
-async def run_free_mock(
-    system: MockSystem, free: Free[ActorF, A]
-) -> A:
+async def run_free_mock(system: MockSystem, free: Free[ActorF, A]) -> A:
     """Run a Free[A] workflow against a MockSystem (async)."""
     interpreter = MockInterpreter(system)
     return await _run_trampoline(free, interpreter)
 
 
-def run_free_mock_sync(
-    system: MockSystem, free: Free[ActorF, A]
-) -> A:
+def run_free_mock_sync(system: MockSystem, free: Free[ActorF, A]) -> A:
     """Run a Free[A] workflow against a MockSystem (synchronous version)."""
     interpreter = MockInterpreterSync(system)
     return _run_trampoline_sync(free, interpreter)

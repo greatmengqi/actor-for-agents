@@ -291,9 +291,7 @@ def traverse(items: list[F], f: Callable[[F], Either[E, A]]) -> Either[E, list[A
     return Right(result)  # type: ignore
 
 
-def product(
-    left: Either[E, A], right: Either[E, B]
-) -> Either[E, tuple[A, B]]:
+def product(left: Either[E, A], right: Either[E, B]) -> Either[E, tuple[A, B]]:
     """Applicative.product: (F[A], F[B]) → F[(A, B)]
 
     Combines two Eithers into an Either of tuple.
