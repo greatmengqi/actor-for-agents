@@ -140,14 +140,74 @@ Every `TaskEvent` carries `parent_task_id` and `parent_agent_path` — reconstru
 
 | Class | Description |
 |-------|-------------|
-| `Actor` | Base class. Override `on_receive`, `on_started`, `on_stopped`, `on_restart` |
-| `ActorRef` | Lightweight handle. `tell(msg)` / `ask(msg)` / `ask_stream(task)` |
-| `ActorSystem` | Container. `spawn(cls, name)` / `shutdown()` |
+| `Actor` | Base class. Override `on_receive`, `on_started`, `on_stopped`, `on_restart`, `stop_policy` |
+| `ActorRef` | Lightweight handle. `tell(msg)` / `ask(msg)` / `ask_stream(task)` / `free_ask(msg)` / `free_tell(msg)` / `free_stop()` |
+| `ActorSystem` | Container. `spawn(cls, name)` / `get_actor(path)` / `ask(path, msg)` / `shutdown()` |
 | `AgentSystem` | Drop-in replacement with event streaming. `run(cls, input)` / `abort(run_id)` |
 | `Mailbox` | Interface. `MemoryMailbox` (default) or `RedisMailbox` |
 | `Middleware` | Interceptor chain for all lifecycle events |
 | `OneForOneStrategy` | Restart only the failing child |
 | `AllForOneStrategy` | Restart all siblings when one fails |
+| `StopPolicy` | ADT: `StopMode.NEVER` / `StopMode.ONE_TIME` / `AfterMessage(msg)` / `AfterIdle(seconds)` |
+
+## Stop Policy
+
+Actors support declarative lifecycle management via `stop_policy`:
+
+```python
+class OneTimeWorker(Actor):
+    def stop_policy(self) -> StopPolicy:
+        return StopMode.ONE_TIME  # Auto-stop after one message
+
+    async def on_receive(self, task):
+        return process(task)
+        # Actor stops automatically after this
+
+class IdleCache(Actor):
+    def stop_policy(self) -> StopPolicy:
+        return AfterIdle(seconds=60.0)  # Auto-stop after 60s idle
+
+    async def on_receive(self, message):
+        return self.cache.get(message)
+```
+
+**`tell()` type constraint**: Spawning a temporary actor via `tell()` requires a non-NEVER policy to prevent actor leaks.
+
+```python
+await self.tell(EchoActor, "hello")  # OK if EchoActor has ONE_TIME/AfterMessage/AfterIdle
+# Raises TypeError if EchoActor has NEVER policy
+```
+
+## Path-Based Lookup
+
+Actors can be addressed by path for distributed systems:
+
+```python
+# Get actor ref by path
+ref = await system.get_actor("/app/workers/collector")
+result = await ref.ask("status")
+
+# Shorthand for get_actor + ask
+result = await system.ask("/app/workers/collector", "status")
+```
+
+## Free Monad API
+
+For composable actor workflows, use `ref.free_xxx()`:
+
+```python
+def workflow(ref: ActorRef):
+    return (
+        ref.free_ask("hello")
+        .map(lambda r: r.upper())
+        .flatMap(lambda r: ref.free_tell(r))
+        .flatMap(lambda _: ref.free_stop())
+    )
+
+result = await system.run_free(workflow(worker_ref))
+```
+
+Available: `free_ask(msg)`, `free_tell(msg)`, `free_stop()`
 
 ## Supervision
 
