@@ -16,7 +16,7 @@ Usage::
         await system.shutdown()
 """
 
-from actor_for_agents.actor import Actor, ActorContext
+from actor_for_agents.actor import Actor, ActorContext, AfterIdle, AfterMessage, StopMode, StopPolicy
 from actor_for_agents.agents.system import AgentSystem
 from actor_for_agents.frees import Free, FlatMap, Pure, Suspend, lift_free, run_free
 from actor_for_agents.actor_f import (
@@ -53,6 +53,8 @@ __all__ = [
     "ActorF",
     "ActorRef",
     "ActorSystem",
+    "AfterIdle",
+    "AfterMessage",
     "AgentSystem",
     "AllForOneStrategy",
     "AskF",
@@ -81,6 +83,8 @@ __all__ = [
     "run_free_mock",
     "spawn",
     "stop",
+    "StopMode",
+    "StopPolicy",
     "SupervisorStrategy",
     "Suspend",
     "TellF",
