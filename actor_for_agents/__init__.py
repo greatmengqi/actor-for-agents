@@ -18,6 +18,16 @@ Usage::
 
 from actor_for_agents.actor import Actor, ActorContext
 from actor_for_agents.agents.system import AgentSystem
+from actor_for_agents.frees import Free, FlatMap, Pure, Suspend, lift_free, run_free
+from actor_for_agents.actor_f import (
+    ActorF, AskF, SpawnF, StopF, TellF,
+    ask,
+    get_ref,
+    spawn,
+    stop,
+    tell, tell_direct,
+)
+from actor_for_agents.interpreter import MockInterpreter, MockRef, MockSystem, run_free_mock
 from actor_for_agents.mailbox import Mailbox, MemoryMailbox
 from actor_for_agents.middleware import Middleware
 from actor_for_agents.ref import ActorRef, MailboxFullError, ReplyChannel
@@ -30,27 +40,52 @@ from actor_for_agents.supervision import (
     OneForOneStrategy,
     Right,
     SupervisorStrategy,
+    map2,
+    product,
+    sequence,
+    traverse,
 )
 from actor_for_agents.system import ActorSystem, DeadLetter
 
 __all__ = [
     "Actor",
     "ActorContext",
+    "ActorF",
     "ActorRef",
     "ActorSystem",
     "AgentSystem",
     "AllForOneStrategy",
+    "AskF",
     "DeadLetter",
     "Directive",
     "DirectiveResult",
     "Either",
+    "FlatMap",
+    "Free",
+    "get_ref",
+    "ask",
+    "lift_free",
     "Left",
     "Mailbox",
     "MailboxFullError",
     "MemoryMailbox",
     "Middleware",
+    "MockInterpreter",
+    "MockRef",
+    "MockSystem",
     "OneForOneStrategy",
+    "Pure",
     "ReplyChannel",
     "Right",
+    "run_free",
+    "run_free_mock",
+    "spawn",
+    "stop",
     "SupervisorStrategy",
+    "Suspend",
+    "TellF",
+    "SpawnF",
+    "StopF",
+    "tell",
+    "tell_direct",
 ]
