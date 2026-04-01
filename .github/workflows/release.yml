@@ -20,7 +20,7 @@ jobs:
       - name: Build package
         run: |
           uv sync --all-extras
-          uv run python -m build
+          uv run --with build python -m build
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
