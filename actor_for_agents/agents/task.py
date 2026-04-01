@@ -17,7 +17,7 @@ from __future__ import annotations
 from abc import ABC
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
 
 from uuid import uuid4
 
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 InputT = TypeVar("InputT")  # input type
 OutputT = TypeVar("OutputT")  # output type
+P = TypeVar("P")  # mapped output type
 
 
 class TaskStatus(Enum):
@@ -146,6 +147,45 @@ class TaskResult(Generic[OutputT]):
         if self.is_failure():
             raise RuntimeError(f"Task failed: {self.error!r}")
         return self.output
+
+    def map(self, f: Callable[[OutputT], P]) -> "TaskResult[P]":
+        """Functor map — applies f only to successful results (Right functor).
+
+        Law: map(id) = id, map(f ∘ g) = map(f) ∘ map(g)
+        """
+        if self.is_failure():
+            return self  # type: ignore
+        return TaskResult(
+            task_id=self.task_id,
+            output=f(self.output) if self.output is not None else None,
+            error=self.error,
+            status=self.status,
+        )
+
+    def flatMap(self, f: Callable[[OutputT], "TaskResult[P]"]) -> "TaskResult[P]":
+        """Monad bind — chains a new TaskResult-producing function.
+
+        Law: flatMap(pure(x)) = x, flatMap(f) ∘ flatMap(g) = flatMap(λx. g(x) >>= f)
+        """
+        if self.is_failure():
+            return self  # type: ignore
+        if self.output is None:
+            return TaskResult(task_id=self.task_id, status=TaskStatus.FAILED, error="output is None")
+        return f(self.output)
+
+    @classmethod
+    def pure(cls, value: OutputT, task_id: str | None = None) -> "TaskResult[OutputT]":
+        """Applicative pure — wraps a value in a successful TaskResult."""
+        return cls(task_id=task_id or uuid4().hex, output=value, status=TaskStatus.COMPLETED)
+
+    def apply(
+        self, f: Callable[[OutputT], P]
+    ) -> "TaskResult[P]":
+        """Applicative ap — applies a wrapped function to this result.
+
+        Equivalent to self.map(f), kept for Applicative consistency.
+        """
+        return self.map(f)
 
 
 @dataclass

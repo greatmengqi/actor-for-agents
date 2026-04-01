@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections import deque
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from actor_for_agents.actor import Actor, ActorContext, MsgT, RetT
 from actor_for_agents.mailbox import Empty, Mailbox, MemoryMailbox
@@ -108,6 +108,30 @@ class ActorSystem:
             del self._root_cells[name]
             raise
         return cell.ref
+
+    async def run_free(self, free: "Free[ActorF, Any]") -> "Any":
+        """Execute a Free[A] workflow against this ActorSystem.
+
+        The Free program is built using actor operations (spawn, tell, ask, stop)
+        and is interpreted against this live system.
+
+        Example::
+
+            from actor_for_agents.frees import Free
+            from actor_for_agents.interpreter import run_free
+            from actor_for_agents.actor_f import spawn, tell, ask
+
+            async def workflow() -> Free[ActorF, str]:
+                r = await spawn("greeter", GreeterActor)
+                await tell(r, "hello")
+                return await ask(r, "status")
+
+            result = await system.run_free(workflow())
+        """
+        from actor_for_agents.actor_f import ActorF
+        from actor_for_agents.interpreter import run_free as interpret
+
+        return await interpret(self, free)
 
     async def shutdown(self, *, timeout: float = 10.0) -> None:
         """Gracefully stop all actors."""
