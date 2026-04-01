@@ -52,6 +52,32 @@ Override to customize how this actor supervises its children.
 
 Default: `OneForOneStrategy(max_restarts=3, within_seconds=60)`.
 
+#### `stop_policy()`
+
+```python
+def stop_policy(self) -> StopPolicy
+```
+
+Override to customize automatic lifecycle management.
+
+Default: `StopMode.NEVER` (actor never auto-stops).
+
+```python
+from actor_for_agents import StopMode, AfterMessage, AfterIdle, StopPolicy
+
+# Auto-stop after one message
+def stop_policy(self) -> StopPolicy:
+    return StopMode.ONE_TIME
+
+# Auto-stop after receiving specific message
+def stop_policy(self) -> StopPolicy:
+    return AfterMessage(message="shutdown")
+
+# Auto-stop after idle timeout
+def stop_policy(self) -> StopPolicy:
+    return AfterIdle(seconds=60.0)
+```
+
 ### Properties (via context)
 
 | Property | Type | Description |
@@ -107,6 +133,30 @@ def is_alive(self) -> bool
 
 Returns `True` if the actor is still running.
 
+#### `free_ask(message)`
+
+```python
+def free_ask(self, message: Any) -> Free[ActorF, Any]
+```
+
+Lift an ask operation into the Free monad for composable workflows.
+
+#### `free_tell(message)`
+
+```python
+def free_tell(self, message: Any) -> Free[ActorF, None]
+```
+
+Lift a tell operation into the Free monad for composable workflows.
+
+#### `free_stop()`
+
+```python
+def free_stop(self) -> Free[ActorF, None]
+```
+
+Lift a stop operation into the Free monad for composable workflows.
+
 ---
 
 ## ActorSystem
@@ -133,6 +183,28 @@ async def spawn(
 ```
 
 Spawn a root-level actor.
+
+#### `get_actor(path)`
+
+```python
+async def get_actor(path: str) -> ActorRef | None
+```
+
+Get actor ref by path. Returns `None` if not found.
+
+Path format: `/system-name/actor-name/.../actor-name`
+
+Example: `/app/workers/collector`
+
+#### `ask(path, message, timeout)`
+
+```python
+async def ask(path: str, message: Any, timeout: float = 30.0) -> Any
+```
+
+Shorthand for `get_actor(path)` + `ref.ask(message)`.
+
+Raises `ValueError` if actor not found.
 
 #### `shutdown(timeout)`
 
@@ -185,3 +257,51 @@ Directive.resume
 Directive.stop
 Directive.escalate
 ```
+
+---
+
+## Stop Policy ADT
+
+### StopMode
+
+```python
+from actor_for_agents import StopMode, StopPolicy
+```
+
+```python
+class StopMode(Enum):
+    NEVER = auto()    # Never auto-stop (default)
+    ONE_TIME = auto() # Stop after processing one message
+```
+
+### AfterMessage
+
+```python
+from actor_for_agents import AfterMessage
+```
+
+```python
+@dataclass
+class AfterMessage:
+    message: Any  # Stop after receiving this specific message
+```
+
+### AfterIdle
+
+```python
+from actor_for_agents import AfterIdle
+```
+
+```python
+@dataclass
+class AfterIdle:
+    seconds: float  # Stop after being idle for N seconds
+```
+
+### StopPolicy
+
+```python
+from actor_for_agents import StopPolicy
+```
+
+Union type: `StopMode | AfterMessage | AfterIdle`

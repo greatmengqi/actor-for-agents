@@ -6,9 +6,13 @@ import asyncio
 import logging
 from collections import deque
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from actor_for_agents.actor import Actor, ActorContext, MsgT, RetT
+if TYPE_CHECKING:
+    from actor_for_agents.actor_f import ActorF
+    from actor_for_agents.frees import Free
+
+from actor_for_agents.actor import Actor, ActorContext, MsgT, RetT, StopMode, AfterMessage, AfterIdle
 from actor_for_agents.mailbox import Empty, Mailbox, MemoryMailbox
 from actor_for_agents.middleware import ActorMailboxContext, Middleware, NextFn, build_middleware_chain
 from actor_for_agents.ref import (
@@ -109,6 +113,29 @@ class ActorSystem:
             raise
         return cell.ref
 
+    async def run_free(self, free: "Free[ActorF, Any]") -> "Any":
+        """Execute a Free[A] workflow against this ActorSystem.
+
+        The Free program is built using actor operations (spawn, tell, ask, stop)
+        and is interpreted against this live system.
+
+        Example::
+
+            from actor_for_agents.frees import Free
+            from actor_for_agents.interpreter import run_free
+            from actor_for_agents.actor_f import spawn, tell, ask
+
+            async def workflow() -> Free[ActorF, str]:
+                r = await spawn("greeter", GreeterActor)
+                await tell(r, "hello")
+                return await ask(r, "status")
+
+            result = await system.run_free(workflow())
+        """
+        from actor_for_agents.interpreter import run_free as interpret
+
+        return await interpret(self, free)
+
     async def shutdown(self, *, timeout: float = 10.0) -> None:
         """Gracefully stop all actors."""
         self._shutting_down = True
@@ -149,6 +176,52 @@ class ActorSystem:
     def dead_letters(self) -> list[DeadLetter]:
         return list(self._dead_letters)
 
+    async def get_actor(self, path: str) -> ActorRef | None:
+        """Get actor ref by path.
+
+        Path format: /system-name/actor-name/.../actor-name
+        Example: /system/parent/child/echoagent-a1b2c3d4
+
+        Returns None if actor is not found.
+        """
+        # Normalize path
+        if not path.startswith("/"):
+            path = "/" + path
+        parts = [p for p in path.split("/") if p]
+        if not parts:
+            return None
+
+        # First part is system name
+        if parts[0] != self.name:
+            return None
+        parts = parts[1:]
+
+        # Traverse from root cells
+        current: dict[str, _ActorCell] = self._root_cells
+        for i, part in enumerate(parts):
+            cell = current.get(part)
+            if cell is None:
+                return None
+            if i == len(parts) - 1:
+                return cell.ref
+            current = cell.children
+        return None
+
+    async def ask(self, path: str, message: Any, *, timeout: float = 30.0) -> Any:
+        """Get actor by path and send ask message.
+
+        Shorthand for::
+
+            ref = await system.get_actor("/system/parent/child")
+            return await ref.ask(message, timeout=timeout)
+
+        Raises ValueError if actor not found.
+        """
+        ref = await self.get_actor(path)
+        if ref is None:
+            raise ValueError(f"Actor not found: {path}")
+        return await ref.ask(message, timeout=timeout)
+
 
 # ---------------------------------------------------------------------------
 # _ActorCell — internal runtime wrapper
@@ -171,6 +244,8 @@ class _ActorCell:
         mailbox: Mailbox,
         middlewares: list[Middleware] | None = None,
     ) -> None:
+        import time
+
         self.actor_cls = actor_cls
         self.name = name
         self.parent = parent
@@ -184,6 +259,7 @@ class _ActorCell:
         self._supervisor_strategy: SupervisorStrategy | None = None
         self._middlewares = middlewares or []
         self._receive_chain: NextFn | None = None
+        self._last_message_time: float = time.time()  # For AfterIdle tracking
         # Cache path (immutable after init — parent never changes)
         parts: list[str] = []
         cell: _ActorCell | None = self
@@ -268,11 +344,25 @@ class _ActorCell:
     # -- Processing loop -------------------------------------------------------
 
     async def _run(self) -> None:
+        import time
+
         consecutive_failures = 0
         try:
             while not self.stopped:
+                # Calculate idle timeout from policy
+                idle_timeout: float | None = None
+                if self.actor is not None:
+                    policy = self.actor.stop_policy()
+                    if isinstance(policy, AfterIdle):
+                        idle_timeout = policy.seconds
+
                 try:
-                    msg = await self.mailbox.get()
+                    if idle_timeout is not None:
+                        msg = await asyncio.wait_for(self.mailbox.get(), timeout=idle_timeout)
+                    else:
+                        msg = await self.mailbox.get()
+                except asyncio.TimeoutError:
+                    break  # Idle timeout reached
                 except asyncio.CancelledError:
                     break
 
@@ -291,6 +381,20 @@ class _ActorCell:
                             msg.reply_to or self.system.system_id, reply, self.system._replies
                         )
                     consecutive_failures = 0
+                    # Update last message time for AfterIdle tracking
+                    self._last_message_time = time.time()
+                    # Check stop policy
+                    if self.actor is not None:
+                        policy = self.actor.stop_policy()
+                        if isinstance(policy, StopMode):
+                            if policy == StopMode.ONE_TIME:
+                                break
+                        elif isinstance(policy, AfterMessage):
+                            if msg.payload == policy.message:
+                                break
+                        elif isinstance(policy, AfterIdle):
+                            # Reset idle timeout after each message
+                            idle_timeout = policy.seconds
                 except Exception as exc:
                     if isinstance(msg, _Envelope) and msg.correlation_id is not None:
                         reply = _ReplyMessage(msg.correlation_id, error=str(exc), exception=exc)
@@ -364,6 +468,8 @@ class _ActorCell:
             await self.mailbox.close()
         except Exception:
             logger.exception("Error closing mailbox for %s", self.path)
+        # Break circular reference: _ActorCell → actor → context → _cell → _ActorCell
+        self.actor = None
 
     # -- Supervision -----------------------------------------------------------
 
