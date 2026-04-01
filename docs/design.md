@@ -69,6 +69,40 @@ Directives: `restart` → `resume` → `stop` → `escalate` (propagates to gran
 
 `join()` waits for the actor task to complete using `asyncio.shield` — if the caller is cancelled, the wait is abandoned but the actor continues its own shutdown. Only `CancelledError` is suppressed; other task failures propagate to make teardown problems visible.
 
+### Stop Policy ADT
+
+Actors are persistent by default (`StopMode.NEVER`). The `stop_policy()` method returns a policy that controls automatic lifecycle management:
+
+| Policy | Behavior |
+|--------|----------|
+| `StopMode.NEVER` | Never auto-stop (default) |
+| `StopMode.ONE_TIME` | Stop after processing one message |
+| `AfterMessage(msg)` | Stop after receiving the specific message |
+| `AfterIdle(seconds)` | Stop after being idle for N seconds |
+
+The policy is checked after each message is processed. `tell()` (spawning temporary actors) requires a non-NEVER policy to prevent actor leaks.
+
+### Free Monad API
+
+For composable actor workflows, the framework provides `Free[ActorF, A]` monad:
+
+```python
+from actor_for_agents import ActorSystem, ActorRef
+
+# Build a workflow using ref.free_xxx()
+def workflow(ref: ActorRef):
+    return (
+        ref.free_ask("hello")
+        .flatMap(lambda r: ref.free_tell(r.upper()))
+        .flatMap(lambda _: ref.free_stop())
+    )
+
+# Execute against the live system
+result = await system.run_free(workflow(worker_ref))
+```
+
+The Free monad separates workflow description from interpretation, enabling testable mock interpreters.
+
 ---
 
 ## Agent layer
