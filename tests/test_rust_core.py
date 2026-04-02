@@ -2,6 +2,19 @@
 
 import pytest
 
+# Skip if rust_core is not available (not built via maturin)
+rust_core_available = False
+try:
+    from rust_core import RustSystem
+    rust_core_available = True
+except ImportError:
+    pass
+
+pytestmark = pytest.mark.skipif(
+    not rust_core_available,
+    reason="rust_core not installed (run 'cd rust_core && maturin develop' first)"
+)
+
 
 class TestRustSystem:
     """Test RustSystem core functionality."""
