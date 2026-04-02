@@ -41,7 +41,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/toolchain@master
+        uses: dtolnay/toolchain@stable
         with:
           toolchain: stable
 
