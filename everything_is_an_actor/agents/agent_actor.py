@@ -41,7 +41,7 @@ class AgentActor(Actor[Task[InputT], TaskResult[OutputT]], Generic[InputT, Outpu
 
         system = ActorSystem("app")
         ref = await system.spawn(SummaryAgent, "summarizer")
-        result: TaskResult[str] = await ref.ask(Task(input="long document..."))
+        result: TaskResult[str] = await system.ask(ref, Task(input="long document..."))
         output: str = result.output
 
     Example (sync with blocking code)::
@@ -54,7 +54,7 @@ class AgentActor(Actor[Task[InputT], TaskResult[OutputT]], Generic[InputT, Outpu
 
         system = ActorSystem("app")
         ref = await system.spawn(FileAgent, "reader")
-        result: TaskResult[str] = await ref.ask(Task(input="file.txt"))
+        result: TaskResult[str] = await system.ask(ref, Task(input="file.txt"))
         output: str = result.output
 
     """
@@ -128,7 +128,7 @@ class AgentActor(Actor[Task[InputT], TaskResult[OutputT]], Generic[InputT, Outpu
         if not isinstance(message, Task):
             raise TypeError(
                 f"{type(self).__name__} expects Task, got {type(message).__name__}. "
-                "Wrap your input: ref.ask(Task(input=your_data))"
+                "Wrap your input: system.ask(ref, Task(input=your_data))"
             )
 
         from everything_is_an_actor.agents.run_stream import _current_task_id_var, _run_event_sink
@@ -208,4 +208,4 @@ class AgentActor(Actor[Task[InputT], TaskResult[OutputT]], Generic[InputT, Outpu
 
     async def _emit_event(self, event: TaskEvent) -> None:
         if self._active_sink is not None:
-            await self._active_sink.tell(event)
+            await self._active_sink._tell(event)

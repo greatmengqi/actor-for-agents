@@ -11,7 +11,7 @@ Usage::
     async def main():
         system = ActorSystem("app")
         ref = await system.spawn(Greeter, "greeter")
-        reply = await ref.ask("World", timeout=5.0)
+        reply = await system.ask(ref, "World", timeout=5.0)
         print(reply)  # Hello, World!
         await system.shutdown()
 """

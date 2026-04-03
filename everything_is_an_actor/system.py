@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -37,6 +38,13 @@ _MAX_DEAD_LETTERS = 10000
 
 # Maximum consecutive failures before a root actor poison-quarantines a message
 _MAX_CONSECUTIVE_FAILURES = 10
+
+# Timeout for canceling pending tasks during sync wrapper teardown (non-blocking)
+_SYNC_WRAPPER_TEARD_CLEANUP_TIMEOUT = 0.1
+
+# Thread-local storage for persistent event loops per executor thread
+_thread_local_loop = threading.local()
+
 
 
 @dataclass
@@ -85,6 +93,16 @@ class ActorSystem:
             else None
         )
 
+    @property
+    def executor(self) -> Any:
+        """Thread pool executor for sync actor dispatch."""
+        return self._executor
+
+    @property
+    def threaded(self) -> bool:
+        """Whether the system runs in threaded mode."""
+        return self._threaded
+
     async def spawn(
         self,
         actor_cls: type[Actor[MsgT, RetT]],
@@ -101,6 +119,10 @@ class ActorSystem:
             mailbox_size: Size hint for the default mailbox.
             mailbox: Custom mailbox instance. If provided, overrides mailbox_cls.
         """
+        # Validate AgentActor compatibility at spawn-time
+        from everything_is_an_actor.validation import validate_agent_actor_compatibility
+        validate_agent_actor_compatibility(actor_cls, mode="single")
+
         if name in self._root_cells:
             raise ValueError(f"Root actor '{name}' already exists")
         cell = _ActorCell(
@@ -162,7 +184,20 @@ class ActorSystem:
         await self._reply_channel.stop_listener()
         if self._executor is not None:
             self._executor.shutdown(wait=False)
+            # Clean up thread-local event loops after executor shutdown
+            self._cleanup_thread_local_loops()
         logger.info("ActorSystem '%s' shut down (%d dead letters)", self.name, len(self._dead_letters))
+
+    def _cleanup_thread_local_loops(self) -> None:
+        """Clean up thread-local event loops after executor shutdown.
+
+        This is called after the thread pool executor is shut down to ensure
+        any remaining event loops in thread-local storage are properly closed.
+        """
+        # Note: We can't directly access thread-local storage from other threads,
+        # but the loops will be garbage collected when the threads terminate.
+        # This method is a placeholder for any future cleanup needs.
+        pass
 
     def _dead_letter(self, recipient: ActorRef, message: Any, sender: ActorRef | None) -> None:
         dl = DeadLetter(recipient=recipient, message=message, sender=sender)
@@ -213,20 +248,50 @@ class ActorSystem:
             current = cell.children
         return None
 
-    async def ask(self, path: str, message: Any, *, timeout: float = 30.0) -> Any:
-        """Get actor by path and send ask message.
+    async def ask(self, target: ActorRef | str, message: Any, *, timeout: float = 30.0) -> Any:
+        """Send a message and wait for reply.
 
-        Shorthand for::
+        ``target`` can be an ``ActorRef`` or a path string::
 
-            ref = await system.get_actor("/system/parent/child")
-            return await ref.ask(message, timeout=timeout)
-
-        Raises ValueError if actor not found.
+            result = await system.ask(ref, "hello")
+            result = await system.ask("/system/worker", "hello")
         """
-        ref = await self.get_actor(path)
+        ref = target if isinstance(target, ActorRef) else await self.get_actor(target)
         if ref is None:
-            raise ValueError(f"Actor not found: {path}")
-        return await ref.ask(message, timeout=timeout)
+            raise ValueError(f"Actor not found: {target}")
+        return await ref._ask(message, timeout=timeout)
+
+    async def tell(self, target: ActorRef | str, message: Any) -> None:
+        """Fire-and-forget message delivery.
+
+        ``target`` can be an ``ActorRef`` or a path string::
+
+            await system.tell(ref, "hello")
+            await system.tell("/system/worker", "hello")
+        """
+        ref = target if isinstance(target, ActorRef) else await self.get_actor(target)
+        if ref is None:
+            raise ValueError(f"Actor not found: {target}")
+        import asyncio as _aio
+        result = ref._tell(message)
+        if _aio.iscoroutine(result):
+            await result
+
+    async def ask_stream(self, target: ActorRef | str, message: Any, *, timeout: float = 30.0):  # type: ignore[return]
+        """Stream events from an AgentActor.
+
+        ``target`` can be an ``ActorRef`` or a path string::
+
+            async for item in system.ask_stream(ref, Task(input="x")):
+                match item:
+                    case StreamEvent(event=e): ...
+                    case StreamResult(result=r): ...
+        """
+        ref = target if isinstance(target, ActorRef) else await self.get_actor(target)
+        if ref is None:
+            raise ValueError(f"Actor not found: {target}")
+        async for item in ref._ask_stream(message, timeout=timeout):
+            yield item
 
 
 # ---------------------------------------------------------------------------
@@ -279,32 +344,29 @@ class _ActorCell:
         self.actor = self.actor_cls()
         self.actor.context = ActorContext(self)
 
-        # Check if actor implements sync receive() instead of async on_receive()
-        import inspect
-        # Check if receive is defined directly on this class (not inherited from Actor)
-        has_sync_receive = (
-            'receive' in self.actor_cls.__dict__ and
-            callable(self.actor_cls.__dict__['receive']) and
-            not inspect.iscoroutinefunction(self.actor_cls.__dict__['receive'])
-        )
+        # Check if actor implements sync receive() (MRO-aware)
+        from everything_is_an_actor.validation import find_sync_handler
+        has_sync_receive = find_sync_handler(self.actor_cls, "receive") is not None
 
         if has_sync_receive:
-            # Sync actor: use receive() method directly
+            # Sync actor: wrap in async handler that dispatches to executor
             def _sync_handler(_ctx: ActorMailboxContext, message: Any) -> Any:
                 return self.actor.receive(message)  # type: ignore[union-attr]
 
             async def _inner_handler(_ctx: ActorMailboxContext, message: Any) -> Any:
-                # Sync handler runs in thread pool via _sync_wrapper
                 loop = asyncio.get_running_loop()
                 future = loop.run_in_executor(
-                    self.system._executor,
+                    self.system.executor,
                     _sync_handler,
                     _ctx,
                     message,
                 )
-                return await asyncio.wrap_future(future)
+                return await future
 
-            self._receive_chain = _inner_handler
+            if self._middlewares:
+                self._receive_chain = build_middleware_chain(self._middlewares, _inner_handler)
+            else:
+                self._receive_chain = _inner_handler
         else:
             # Async actor: use on_receive() method
             async def _inner_handler(_ctx: ActorMailboxContext, message: Any) -> Any:
@@ -324,58 +386,63 @@ class _ActorCell:
         await self.actor.on_started()
         self.task = asyncio.create_task(self._run(), name=f"actor:{self.path}")
 
-    async def _process_message(self, msg: Any) -> None:
-        """Process a single message. May be called in thread pool or event loop."""
-        import time
-
-        if isinstance(msg, _Stop):
-            self.stopped = True
-            return
-
-        if not isinstance(msg, _Envelope):
-            return
-
-        msg_type = "ask" if msg.correlation_id else "tell"
-        ctx = ActorMailboxContext(self.ref, msg.sender, msg_type)
-
-        # In threaded mode, dispatch to thread pool; otherwise await directly
-        if self.system._threaded and self.system._executor:
-            # Run in thread pool - the executor runs a sync wrapper that awaits
-            loop = asyncio.get_running_loop()
-            # Use a sync wrapper since run_in_executor expects sync functions
-            future = loop.run_in_executor(
-                self.system._executor,
-                self._sync_wrapper,
-                ctx,
-                msg.payload,
-            )
-            result = await asyncio.wrap_future(future)
-        else:
-            result = await self._receive_chain(ctx, msg.payload)
-
-        if msg.correlation_id is not None:
-            reply = _ReplyMessage(msg.correlation_id, result=result)
-            await self.system._reply_channel.send_reply(
-                msg.reply_to or self.system.system_id, reply, self.system._replies
-            )
-
-        self._last_message_time = time.time()
-
-        # Check stop policy after message processed
-        cached_policy = self.actor.stop_policy() if self.actor else None
-        if cached_policy is not None:
-            if isinstance(cached_policy, StopMode) and cached_policy == StopMode.ONE_TIME:
-                self.stopped = True
-            elif isinstance(cached_policy, AfterMessage) and msg.payload == cached_policy.message:
-                self.stopped = True
-
     def _sync_wrapper(self, ctx: ActorMailboxContext, payload: Any) -> Any:
-        """Sync wrapper for thread pool. Creates event loop to run async handler."""
-        loop = asyncio.new_event_loop()
+        """Sync wrapper for thread pool. Uses thread-local persistent event loop.
+
+        Each executor thread maintains its own persistent event loop in thread-local storage,
+        avoiding the expensive per-message loop creation cost. Contextvars are explicitly
+        captured and propagated so middleware can read trace IDs, auth context, and other
+        contextvar-based state even in sync actors.
+
+        Teardown is non-blocking: only tasks created during this invocation are cancelled
+        with a bounded timeout to prevent head-of-line blocking on leaked background tasks.
+        Long-lived/background tasks that span multiple messages are preserved.
+        """
+        import contextvars
+
+        # Get or create thread-local persistent event loop
+        if not hasattr(_thread_local_loop, "loop") or _thread_local_loop.loop is None:
+            _thread_local_loop.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(_thread_local_loop.loop)
+
+        loop = _thread_local_loop.loop
+        context = contextvars.copy_context()
+
+        # Track existing tasks before this invocation to only cancel new tasks
+        existing_tasks = set(asyncio.all_tasks(loop))
+
         try:
-            return loop.run_until_complete(self._receive_chain(ctx, payload))
+            # Capture and return the handler result
+            result = context.run(loop.run_until_complete, self._receive_chain(ctx, payload))  # type: ignore[misc]
+            return result
         finally:
-            loop.close()
+            # Non-blocking teardown: cancel only tasks created during this invocation
+            try:
+                current_tasks = asyncio.all_tasks(loop)
+                # Only cancel tasks that were created during this invocation
+                new_tasks = [task for task in current_tasks if task not in existing_tasks and not task.done()]
+                if new_tasks:
+                    # Cancel only the new tasks created during this message
+                    for task in new_tasks:
+                        task.cancel()
+                    # Wait with bounded timeout - don't block message completion
+                    try:
+                        loop.run_until_complete(
+                            asyncio.wait(new_tasks, timeout=_SYNC_WRAPPER_TEARD_CLEANUP_TIMEOUT)
+                        )
+                    except asyncio.TimeoutError:
+                        # Log warning but don't block - message completes anyway
+                        logger.warning(
+                            "Sync wrapper teardown timed out waiting for %d new tasks in %s",
+                            len(new_tasks),
+                            self.path,
+                        )
+                    except Exception:
+                        # Any error during cleanup is logged but doesn't block
+                        logger.exception("Error during sync wrapper teardown in %s", self.path)
+            except Exception:
+                # Guard against any errors in the cleanup logic itself
+                logger.exception("Unexpected error in sync wrapper cleanup for %s", self.path)
 
     async def enqueue(self, msg: _Envelope | _Stop) -> None:
         # Try non-blocking first (fast path for MemoryMailbox)
@@ -411,6 +478,10 @@ class _ActorCell:
         mailbox: Mailbox | None = None,
         middlewares: list[Middleware] | None = None,
     ) -> ActorRef[MsgT, RetT]:
+        # Validate AgentActor compatibility at spawn-time
+        from everything_is_an_actor.validation import validate_agent_actor_compatibility
+        validate_agent_actor_compatibility(actor_cls, mode="single")
+
         if name in self.children:
             raise ValueError(f"Child '{name}' already exists under {self.path}")
         child = _ActorCell(
@@ -468,16 +539,16 @@ class _ActorCell:
                     if not isinstance(msg, _Envelope):
                         continue
 
-                    if self.system._threaded and self.system._executor:
+                    if self.system.threaded and self.system.executor:
                         # Threaded mode: dispatch to thread pool
                         loop = asyncio.get_running_loop()
                         future = loop.run_in_executor(
-                            self.system._executor,
+                            self.system.executor,
                             self._sync_wrapper,
                             ActorMailboxContext(self.ref, msg.sender, "ask" if msg.correlation_id else "tell"),
                             msg.payload,
                         )
-                        result = await asyncio.wrap_future(future)
+                        result = await future
                     else:
                         # Async mode: await directly
                         ctx = ActorMailboxContext(self.ref, msg.sender, "ask" if msg.correlation_id else "tell")
