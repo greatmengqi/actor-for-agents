@@ -18,6 +18,7 @@ Usage::
 
 from everything_is_an_actor.actor import Actor, ActorContext, AfterIdle, AfterMessage, StopMode, StopPolicy
 from everything_is_an_actor.agents.system import AgentSystem
+from everything_is_an_actor.dispatcher import DefaultDispatcher, Dispatcher, PoolDispatcher
 from everything_is_an_actor.frees import Free, FlatMap, Pure, Suspend, lift_free, run_free
 from everything_is_an_actor.actor_f import (
     ActorF,
@@ -64,8 +65,10 @@ __all__ = [
     "AllForOneStrategy",
     "AskF",
     "DeadLetter",
+    "DefaultDispatcher",
     "Directive",
     "DirectiveResult",
+    "Dispatcher",
     "Either",
     "FlatMap",
     "Free",
@@ -83,6 +86,7 @@ __all__ = [
     "MockRef",
     "MockSystem",
     "OneForOneStrategy",
+    "PoolDispatcher",
     "Pure",
     "ReplyChannel",
     "Right",

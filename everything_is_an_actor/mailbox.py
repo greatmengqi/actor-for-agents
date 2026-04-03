@@ -125,11 +125,18 @@ class FastMailbox(Mailbox):
     """In-process mailbox backed by ``collections.deque``.
 
     Lower overhead than ``MemoryMailbox`` for single-threaded asyncio use cases.
-    Does NOT support blocking ``get()`` - use only when actor is continuously
-    processing messages (never idle waiting).
+
+    When ``target_loop`` is set, ``put_nowait()`` uses ``call_soon_threadsafe``
+    to wake the consumer — making it safe for cross-loop (cross-thread) producers.
     """
 
-    def __init__(self, maxsize: int = 0, *, backpressure_policy: str = BACKPRESSURE_BLOCK) -> None:
+    def __init__(
+        self,
+        maxsize: int = 0,
+        *,
+        backpressure_policy: str = BACKPRESSURE_BLOCK,
+        target_loop: asyncio.AbstractEventLoop | None = None,
+    ) -> None:
         if backpressure_policy not in BACKPRESSURE_POLICIES:
             raise ValueError(
                 f"Invalid backpressure_policy={backpressure_policy!r}, expected one of {sorted(BACKPRESSURE_POLICIES)}"
@@ -138,19 +145,32 @@ class FastMailbox(Mailbox):
         self._maxsize = maxsize
         self._backpressure_policy = backpressure_policy
         self._get_event: asyncio.Event | None = None
+        self._target_loop = target_loop
+
+    def _signal(self) -> None:
+        """Wake the consumer's get() — cross-loop safe when target_loop is set."""
+        if self._get_event is None:
+            return
+        if self._target_loop is not None:
+            try:
+                current = asyncio.get_running_loop()
+            except RuntimeError:
+                current = None
+            if current is not self._target_loop:
+                self._target_loop.call_soon_threadsafe(self._get_event.set)
+                return
+        self._get_event.set()
 
     async def put(self, msg: Any) -> bool:
         if self._backpressure_policy == BACKPRESSURE_BLOCK:
             self._queue.append(msg)
-            if self._get_event:
-                self._get_event.set()
+            self._signal()
             return True
         if self._backpressure_policy in (BACKPRESSURE_DROP_NEW, BACKPRESSURE_FAIL):
             if len(self._queue) >= self._maxsize > 0:
                 return False
             self._queue.append(msg)
-            if self._get_event:
-                self._get_event.set()
+            self._signal()
             return True
         return False
 
@@ -158,8 +178,7 @@ class FastMailbox(Mailbox):
         if self._maxsize > 0 and len(self._queue) >= self._maxsize:
             return False
         self._queue.append(msg)
-        if self._get_event:
-            self._get_event.set()
+        self._signal()
         return True
 
     async def get(self) -> Any:
@@ -167,7 +186,6 @@ class FastMailbox(Mailbox):
             if self._get_event is None:
                 self._get_event = asyncio.Event()
             self._get_event.clear()
-            # Wait until something is available
             await self._get_event.wait()
         return self._queue.popleft()
 

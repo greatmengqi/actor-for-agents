@@ -71,6 +71,7 @@ class ActorSystem:
         reply_channel: ReplyChannel | None = None,
         mailbox_cls: type[Mailbox] = MemoryMailbox,
         threaded: bool = False,
+        dispatcher: Any = None,
     ) -> None:
         import uuid as _uuid
 
@@ -84,6 +85,7 @@ class ActorSystem:
         self._reply_channel = reply_channel or ReplyChannel()
         self._mailbox_cls = mailbox_cls
         self._threaded = threaded
+        self._dispatcher = dispatcher  # Dispatcher | None
         # Shared thread pool for actors to run blocking I/O
         from concurrent.futures import ThreadPoolExecutor
 
@@ -125,13 +127,27 @@ class ActorSystem:
 
         if name in self._root_cells:
             raise ValueError(f"Root actor '{name}' already exists")
+
+        # Determine target loop via dispatcher
+        target_loop: asyncio.AbstractEventLoop | None = None
+        actual_mailbox = mailbox
+        if self._dispatcher is not None:
+            target_loop = self._dispatcher.assign(actor_cls, name)
+            if target_loop is asyncio.get_running_loop():
+                target_loop = None  # Same loop — no cross-loop overhead
+            elif actual_mailbox is None:
+                # Cross-loop: use FastMailbox with target_loop for thread-safe signaling
+                from everything_is_an_actor.mailbox import FastMailbox
+                actual_mailbox = FastMailbox(mailbox_size, target_loop=target_loop)
+
         cell = _ActorCell(
             actor_cls=actor_cls,
             name=name,
             parent=None,
             system=self,
-            mailbox=mailbox or self._mailbox_cls(mailbox_size),
+            mailbox=actual_mailbox or self._mailbox_cls(mailbox_size),
             middlewares=middlewares or [],
+            target_loop=target_loop,
         )
         self._root_cells[name] = cell
         try:
@@ -314,7 +330,9 @@ class _ActorCell:
         system: ActorSystem,
         mailbox: Mailbox,
         middlewares: list[Middleware] | None = None,
+        target_loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
+        import concurrent.futures
         import time
 
         self.actor_cls = actor_cls
@@ -331,6 +349,11 @@ class _ActorCell:
         self._middlewares = middlewares or []
         self._receive_chain: NextFn | None = None
         self._last_message_time: float = time.time()  # For AfterIdle tracking
+        self._target_loop = target_loop
+        # Cross-loop completion signal (None when same-loop)
+        self._done: concurrent.futures.Future | None = (
+            concurrent.futures.Future() if target_loop is not None else None
+        )
         # Cache path (immutable after init — parent never changes)
         parts: list[str] = []
         cell: _ActorCell | None = self
@@ -384,7 +407,18 @@ class _ActorCell:
             except asyncio.TimeoutError:
                 logger.warning("Middleware %s.on_started timed out for %s", type(mw).__name__, self.path)
         await self.actor.on_started()
-        self.task = asyncio.create_task(self._run(), name=f"actor:{self.path}")
+
+        if self._target_loop is not None and self._target_loop is not asyncio.get_running_loop():
+            # Cross-loop: create _run() task on the target loop
+            async def _cross_loop_run() -> None:
+                self.task = asyncio.current_task()
+                await self._run()
+
+            asyncio.run_coroutine_threadsafe(_cross_loop_run(), self._target_loop)
+            # Brief yield to let the target loop pick up the coroutine
+            await asyncio.sleep(0.01)
+        else:
+            self.task = asyncio.create_task(self._run(), name=f"actor:{self.path}")
 
     def _sync_wrapper(self, ctx: ActorMailboxContext, payload: Any) -> Any:
         """Sync wrapper for thread pool. Uses thread-local persistent event loop.
@@ -648,6 +682,9 @@ class _ActorCell:
             logger.exception("Error closing mailbox for %s", self.path)
         # Break circular reference: _ActorCell → actor → context → _cell → _ActorCell
         self.actor = None
+        # Signal cross-loop joiners
+        if self._done is not None and not self._done.done():
+            self._done.set_result(None)
 
     # -- Supervision -----------------------------------------------------------
 
