@@ -133,37 +133,42 @@ class ActorRef(Generic[MsgT, RetT]):
     def interrupt(self) -> None:
         """Cancel the actor's asyncio task immediately, interrupting in-progress work.
 
-        Use when an ephemeral actor must stop now — e.g., when the calling task is
-        itself being cancelled. Unlike ``stop()``, this does not wait for the actor
-        to finish its current message; it raises ``CancelledError`` directly in the
-        actor's ``_run`` loop, which then calls ``on_stopped`` and removes the actor
-        from its parent's children.
+        Cross-loop safe: uses ``call_soon_threadsafe`` when the actor
+        runs on a different event loop.
 
         No-op if the actor has already stopped.
         """
         task = self._cell.task
         if task is not None and not task.done():
-            task.cancel()
+            target = self._cell._target_loop
+            if target is not None:
+                target.call_soon_threadsafe(task.cancel)
+            else:
+                task.cancel()
 
     async def join(self) -> None:
         """Wait until the actor has fully stopped (on_stopped completed).
 
-        Pairs with ``stop()`` when callers need a hard lifecycle guarantee::
-
-            ref.stop()
-            await ref.join()  # on_stopped() has returned, children removed
+        Cross-loop safe: when the actor runs on a different loop, waits
+        on a ``concurrent.futures.Future`` via ``asyncio.wrap_future``.
 
         No-op if the actor has already stopped or was never started.
-        On cancellation, the wait is abandoned but the actor continues its
-        own shutdown — use ``system.shutdown()`` to force-stop stuck actors.
         """
+        # Cross-loop: use the concurrent.futures.Future
+        done = self._cell._done
+        if done is not None:
+            if done.done():
+                return
+            await asyncio.wrap_future(done)
+            return
+        # Same-loop: await task directly
         task = self._cell.task
         if task is None or task.done():
             return
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
-            pass  # outer join() was cancelled — actor continues shutdown independently
+            pass
 
     # -------------------------------------------------------------------------
     # Free Monad API — describe operations as pure data, execute later
