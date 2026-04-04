@@ -393,6 +393,7 @@ class _ActorCell:
         self._receive_chain: NextFn | None = None
         self._last_message_time: float = time.time()  # For AfterIdle tracking
         self._target_loop = target_loop
+        self._sync_loop: asyncio.AbstractEventLoop | None = None  # thread-local loop used by _sync_wrapper
         # Cross-loop completion signal (None when same-loop)
         self._done: concurrent.futures.Future | None = (
             concurrent.futures.Future() if target_loop is not None else None
@@ -489,6 +490,7 @@ class _ActorCell:
             asyncio.set_event_loop(_thread_local_loop.loop)
 
         loop = _thread_local_loop.loop
+        self._sync_loop = loop  # track for shutdown cleanup
         context = contextvars.copy_context()
 
         return context.run(loop.run_until_complete, self._receive_chain(ctx, payload))  # type: ignore[misc]
@@ -715,6 +717,17 @@ class _ActorCell:
         except Exception:
             logger.exception("Error closing mailbox for %s", self.path)
         # Break circular reference: _ActorCell → actor → context → _cell → _ActorCell
+        # Cancel pending tasks on the thread-local sync loop (prevents "Task was destroyed" warnings)
+        if self._sync_loop is not None:
+            pending = [t for t in asyncio.all_tasks(self._sync_loop) if not t.done()]
+            for t in pending:
+                t.cancel()
+            if pending:
+                try:
+                    self._sync_loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                except Exception:
+                    pass
+            self._sync_loop = None
         self.actor = None
         # Signal cross-loop joiners
         if self._done is not None and not self._done.done():
