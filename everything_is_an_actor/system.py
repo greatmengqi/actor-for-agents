@@ -117,6 +117,7 @@ class ActorSystem:
         mailbox: Mailbox | None = None,
         middlewares: list[Middleware] | None = None,
         dispatcher: str | None = None,
+        backend: str | None = None,
     ) -> ActorRef[MsgT, RetT]:
         """Spawn a root-level actor.
 
