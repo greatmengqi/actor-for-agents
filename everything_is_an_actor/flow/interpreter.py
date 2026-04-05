@@ -214,6 +214,7 @@ async def _interpret_agent(
     finally:
         ref.stop()
         await ref.join()
+        system._root_cells.pop(name, None)
 
 
 # ── Streaming interpreter ────────────────────────────────
@@ -315,3 +316,4 @@ async def _interpret_agent_stream(
     finally:
         ref.stop()
         await ref.join()
+        system._root_cells.pop(name, None)
