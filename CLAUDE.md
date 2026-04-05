@@ -6,16 +6,30 @@ Coding principles for `everything-is-an-actor`. Follow these when writing or rev
 
 ## Layer separation
 
-The codebase has two independent layers:
+The codebase has three layers:
 
 ```
+everything_is_an_actor.moa      ← MOA orchestration pattern (MoATree, MoABuilder)
 everything_is_an_actor.agents   ← AI-specific (Task, AgentActor, streaming)
-everything_is_an_actor          ← generic actor runtime (Actor, ActorRef, ActorSystem)
+everything_is_an_actor.core     ← generic actor runtime (Actor, ActorRef, ActorSystem)
 ```
 
-- `everything_is_an_actor` must not import from `everything_is_an_actor.agents`
-- `everything_is_an_actor.agents` only uses public APIs from the core layer
+Dependency direction: `moa/ → agents/ → core/` only.
+
+- `core/` must not import from `agents/` or `moa/`
+- `agents/` must not import from `moa/`
+- `moa/` only uses public APIs from `agents/` and `core/`
 - Never reach into `_cell`, `_cell.actor`, or other private internals from outside the owning module — use factory patterns or messages instead
+
+## MOA coding constraints
+
+- `MoATree` and `MoANode` are `@dataclass(frozen=True)` — must remain immutable
+- `MoANode.proposers` and `MoATree.nodes` are tuples, normalized in `__post_init__` (defensive copy)
+- `ProposerSpec` is recursive: `type[AgentActor] | MoATree` (leaf or subtree)
+- `min_success` invariants enforced at construction: `>= 1` and `<= len(proposers)`
+- Validated semantics in `_run_proposers`: domain exceptions are recovered into failed `TaskResult`; system exceptions (`MemoryError`, `SystemExit`) propagate immediately
+- `LayerOutput(result, directive)`: plain output resets directive; `LayerOutput` injects `{"input": current, "directive": directive}` into next layer
+- `proposer_timeout` flows: `MoANode → ResolvedNode → context.ask(timeout=...)`
 
 ## Virtual Actor model (Orleans style)
 
