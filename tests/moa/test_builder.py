@@ -203,6 +203,192 @@ class TestMoARuntime:
         finally:
             await system.shutdown()
 
+    async def test_min_success_exact_threshold(self):
+        """3 proposers, 1 fails, min_success=2 — should succeed with exactly 2."""
+        from everything_is_an_actor.moa.builder import MoABuilder
+        from everything_is_an_actor.moa.config import MoANode, MoATree
+        from everything_is_an_actor.agents import AgentSystem
+
+        tree = MoATree(nodes=[
+            MoANode(
+                proposers=[EchoAgent, EchoAgent2, FailingAgent],
+                aggregator=JoinAggregator,
+                min_success=2,
+            ),
+        ])
+        MoAAgent = MoABuilder().build(tree)
+
+        system = AgentSystem("test")
+        try:
+            events = []
+            async for event in system.run(MoAAgent, "hello"):
+                events.append(event)
+            completed = [e for e in events if e.type == "task_completed"]
+            assert len(completed) >= 1
+            result = completed[-1].data
+            assert "[Echo]" in result
+            assert "[Echo2]" in result
+        finally:
+            await system.shutdown()
+
+    async def test_multi_layer_data_flows_through(self):
+        """Verify layer 1 output actually becomes layer 2 input."""
+        from everything_is_an_actor.moa.builder import MoABuilder
+        from everything_is_an_actor.moa.config import MoANode, MoATree
+        from everything_is_an_actor.agents import AgentSystem
+
+        class PrefixAgg(AgentActor[list, str]):
+            async def execute(self, input: list) -> str:
+                outputs = [r.get_or_raise() for r in input if r.is_success()]
+                return "LAYER1:" + ",".join(outputs)
+
+        tree = MoATree(nodes=[
+            MoANode(proposers=[EchoAgent], aggregator=PrefixAgg),
+            MoANode(proposers=[EchoAgent], aggregator=JoinAggregator),
+        ])
+        MoAAgent = MoABuilder().build(tree)
+
+        system = AgentSystem("test")
+        try:
+            events = []
+            async for event in system.run(MoAAgent, "hi"):
+                events.append(event)
+            completed = [e for e in events if e.type == "task_completed"]
+            result = completed[-1].data
+            # Layer 2's EchoAgent receives Layer 1's "LAYER1:..." output
+            assert "LAYER1:" in result
+        finally:
+            await system.shutdown()
+
+    async def test_single_proposer(self):
+        """Edge case: only one proposer in a layer."""
+        from everything_is_an_actor.moa.builder import MoABuilder
+        from everything_is_an_actor.moa.config import MoANode, MoATree
+        from everything_is_an_actor.agents import AgentSystem
+
+        tree = MoATree(nodes=[
+            MoANode(proposers=[EchoAgent], aggregator=JoinAggregator),
+        ])
+        MoAAgent = MoABuilder().build(tree)
+
+        system = AgentSystem("test")
+        try:
+            events = []
+            async for event in system.run(MoAAgent, "solo"):
+                events.append(event)
+            completed = [e for e in events if e.type == "task_completed"]
+            assert len(completed) >= 1
+            assert "[Echo] solo" in completed[-1].data
+        finally:
+            await system.shutdown()
+
+    async def test_repeated_tree_end_to_end(self):
+        """MoATree.repeated() runs N identical layers."""
+        from everything_is_an_actor.moa.builder import MoABuilder
+        from everything_is_an_actor.moa.config import MoANode, MoATree
+        from everything_is_an_actor.agents import AgentSystem
+
+        node = MoANode(proposers=[EchoAgent], aggregator=JoinAggregator)
+        tree = MoATree.repeated(node, num_layers=3)
+        MoAAgent = MoABuilder().build(tree)
+
+        system = AgentSystem("test")
+        try:
+            events = []
+            async for event in system.run(MoAAgent, "x"):
+                events.append(event)
+            completed = [e for e in events if e.type == "task_completed"]
+            assert len(completed) >= 1
+            # After 3 layers of Echo wrapping: [Echo] [Echo] [Echo] x
+            result = completed[-1].data
+            assert result.count("[Echo]") == 3
+        finally:
+            await system.shutdown()
+
+    async def test_nested_moa_tree_end_to_end(self):
+        """A proposer that is itself a MoATree runs correctly."""
+        from everything_is_an_actor.moa.builder import MoABuilder
+        from everything_is_an_actor.moa.config import MoANode, MoATree
+        from everything_is_an_actor.agents import AgentSystem
+
+        subtree = MoATree(nodes=[
+            MoANode(proposers=[EchoAgent, EchoAgent2], aggregator=JoinAggregator),
+        ])
+        tree = MoATree(nodes=[
+            MoANode(proposers=[subtree, EchoAgent], aggregator=JoinAggregator),
+        ])
+        MoAAgent = MoABuilder().build(tree)
+
+        system = AgentSystem("test")
+        try:
+            events = []
+            async for event in system.run(MoAAgent, "nested"):
+                events.append(event)
+            completed = [e for e in events if e.type == "task_completed"]
+            assert len(completed) >= 1
+            result = completed[-1].data
+            # Subtree produces "[Echo] nested | [Echo2] nested"
+            # Outer EchoAgent produces "[Echo] nested"
+            # JoinAggregator joins them
+            assert "[Echo]" in result
+            assert "[Echo2]" in result
+        finally:
+            await system.shutdown()
+
+    async def test_streaming_observability(self):
+        """All intermediate events (proposer/aggregator) are visible in event stream."""
+        from everything_is_an_actor.moa.builder import MoABuilder
+        from everything_is_an_actor.moa.config import MoANode, MoATree
+        from everything_is_an_actor.agents import AgentSystem
+
+        tree = MoATree(nodes=[
+            MoANode(proposers=[EchoAgent, EchoAgent2], aggregator=JoinAggregator),
+        ])
+        MoAAgent = MoABuilder().build(tree)
+
+        system = AgentSystem("test")
+        try:
+            events = []
+            async for event in system.run(MoAAgent, "observe"):
+                events.append(event)
+            # Should have events from: MoAAgent + 2 proposers + 1 aggregator
+            started = [e for e in events if e.type == "task_started"]
+            completed = [e for e in events if e.type == "task_completed"]
+            # At least 4 started events (moa + 2 proposers + aggregator)
+            assert len(started) >= 4
+            assert len(completed) >= 4
+        finally:
+            await system.shutdown()
+
+    async def test_no_directive_does_not_inject(self):
+        """When aggregator returns plain value (no LayerOutput), next layer gets raw input."""
+        from everything_is_an_actor.moa.builder import MoABuilder
+        from everything_is_an_actor.moa.config import MoANode, MoATree
+        from everything_is_an_actor.agents import AgentSystem
+
+        class TypeCheckProposer(AgentActor[Any, str]):
+            async def execute(self, input: Any) -> str:
+                # If directive was NOT injected, input should be a plain string
+                assert isinstance(input, str), f"Expected str, got {type(input)}: {input}"
+                return f"[ok] {input}"
+
+        tree = MoATree(nodes=[
+            MoANode(proposers=[EchoAgent], aggregator=JoinAggregator),
+            MoANode(proposers=[TypeCheckProposer], aggregator=JoinAggregator),
+        ])
+        MoAAgent = MoABuilder().build(tree)
+
+        system = AgentSystem("test")
+        try:
+            events = []
+            async for event in system.run(MoAAgent, "plain"):
+                events.append(event)
+            completed = [e for e in events if e.type == "task_completed"]
+            assert len(completed) >= 1
+            assert "[ok]" in completed[-1].data
+        finally:
+            await system.shutdown()
+
 
 # --- Directive tests ---
 
