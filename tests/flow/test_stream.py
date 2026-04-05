@@ -2,8 +2,9 @@
 
 import pytest
 
+from everything_is_an_actor.core.system import ActorSystem
 from everything_is_an_actor.agents import AgentActor, AgentSystem
-from everything_is_an_actor.flow import agent, interpret_stream
+from everything_is_an_actor.flow import Interpreter, agent
 
 pytestmark = pytest.mark.anyio
 
@@ -23,10 +24,11 @@ class SimpleEcho(AgentActor[str, str]):
 
 class TestInterpretStream:
     async def test_agent_yields_events(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             events = []
-            async for event in interpret_stream(agent(StreamEcho), "hello", system):
+            async for event in interp.run_stream(agent(StreamEcho), "hello"):
                 events.append(event)
 
             types = [e.type for e in events]
@@ -38,11 +40,12 @@ class TestInterpretStream:
 
     async def test_flat_map_streams_second_agent(self):
         """FlatMap interprets first non-streaming, streams second."""
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = agent(StreamEcho).flat_map(agent(StreamEcho))
             events = []
-            async for event in interpret_stream(flow, "test", system):
+            async for event in interp.run_stream(flow, "test"):
                 events.append(event)
 
             # Events from the second agent in the chain
@@ -55,10 +58,11 @@ class TestInterpretStream:
     async def test_pure_yields_no_events(self):
         from everything_is_an_actor.flow import pure
 
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             events = []
-            async for event in interpret_stream(pure(str.upper), "hello", system):
+            async for event in interp.run_stream(pure(str.upper), "hello"):
                 events.append(event)
             assert events == []
         finally:

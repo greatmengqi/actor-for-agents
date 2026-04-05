@@ -11,18 +11,18 @@ import weakref
 
 import pytest
 
+from everything_is_an_actor.core.system import ActorSystem
 from everything_is_an_actor.agents import AgentActor, AgentSystem
 from everything_is_an_actor.flow import (
     Continue,
     Done,
+    Interpreter,
     agent,
-    interpret,
     loop,
     pure,
     race,
     zip_all,
 )
-from everything_is_an_actor.flow.interpreter import interpret_stream
 
 pytestmark = pytest.mark.anyio
 
@@ -78,10 +78,11 @@ class CountingAgent(AgentActor[str, str]):
 class TestShutdownMidFlow:
     async def test_shutdown_during_slow_agent(self):
         """System shutdown while agent is sleeping — should not hang forever."""
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         flow = agent(VerySlowAgent)
 
-        task = asyncio.create_task(interpret(flow, "test", system))
+        task = asyncio.create_task(interp.run(flow, "test"))
         await asyncio.sleep(0.05)  # let agent start
         await system.shutdown()
 
@@ -93,10 +94,11 @@ class TestShutdownMidFlow:
 
     async def test_shutdown_during_zip(self):
         """Shutdown during parallel execution — should not hang."""
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         flow = agent(VerySlowAgent).zip(agent(VerySlowAgent))
 
-        task = asyncio.create_task(interpret(flow, ("a", "b"), system))
+        task = asyncio.create_task(interp.run(flow, ("a", "b")))
         await asyncio.sleep(0.05)
         await system.shutdown()
 
@@ -113,9 +115,10 @@ class TestShutdownMidFlow:
                 await asyncio.sleep(0.05)
                 return Continue(value=input)
 
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         flow = loop(agent(InfiniteLoop), max_iter=1000)
-        task = asyncio.create_task(interpret(flow, "test", system))
+        task = asyncio.create_task(interp.run(flow, "test"))
         await asyncio.sleep(0.15)
         await system.shutdown()
 
@@ -131,10 +134,11 @@ class TestShutdownMidFlow:
 class TestCancellationPropagation:
     async def test_cancel_interpret_task(self):
         """Cancelling the interpret() task should not leak actors."""
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = agent(SlowAgent).flat_map(agent(SlowAgent)).flat_map(agent(SlowAgent))
-            task = asyncio.create_task(interpret(flow, "test", system))
+            task = asyncio.create_task(interp.run(flow, "test"))
             await asyncio.sleep(0.05)
             task.cancel()
 
@@ -148,10 +152,11 @@ class TestCancellationPropagation:
 
     async def test_cancel_race_all_cancelled(self):
         """Cancelling race should cancel all racers."""
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = race(agent(VerySlowAgent), agent(VerySlowAgent))
-            task = asyncio.create_task(interpret(flow, "test", system))
+            task = asyncio.create_task(interp.run(flow, "test"))
             await asyncio.sleep(0.05)
             task.cancel()
 
@@ -174,10 +179,11 @@ class TestActorLeaks:
                     return Done(value="done")
                 return Continue(value=input - 1)
 
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = loop(agent(CountDown), max_iter=200)
-            await interpret(flow, 50, system)
+            await interp.run(flow, 50)
 
             # All ephemeral actors should be stopped and removed
             flow_actors = [name for name in system._root_cells if name.startswith("_flow-")]
@@ -187,11 +193,12 @@ class TestActorLeaks:
 
     async def test_zip_all_does_not_leak_actors(self):
         """10-way parallel should clean up all actors."""
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flows = [agent(Echo) for _ in range(10)]
             f = zip_all(*flows)
-            await interpret(f, [f"item-{i}" for i in range(10)], system)
+            await interp.run(f, [f"item-{i}" for i in range(10)])
 
             flow_actors = [name for name in system._root_cells if name.startswith("_flow-")]
             assert flow_actors == [], f"Leaked actors: {flow_actors}"
@@ -205,10 +212,11 @@ class TestActorLeaks:
             async def execute(self, input: str) -> str:
                 raise RuntimeError("fail")
 
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = agent(FailAgent).recover(lambda e: "recovered")
-            await interpret(flow, "test", system)
+            await interp.run(flow, "test")
 
             flow_actors = [name for name in system._root_cells if name.startswith("_flow-")]
             assert flow_actors == [], f"Leaked actors: {flow_actors}"
@@ -217,10 +225,11 @@ class TestActorLeaks:
 
     async def test_race_loser_cleanup(self):
         """Race losers should be fully cleaned up."""
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = race(agent(Echo), agent(SlowAgent), agent(SlowAgent))
-            await interpret(flow, "fast", system)
+            await interp.run(flow, "fast")
 
             # Wait for background cleanup
             await asyncio.sleep(0.8)
@@ -237,10 +246,11 @@ class TestActorLeaks:
 class TestNameCollision:
     async def test_100_concurrent_same_agent_class(self):
         """100 concurrent spawns of same agent class should not collide."""
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             tasks = [
-                interpret(agent(Echo), f"msg-{i}", system)
+                interp.run(agent(Echo), f"msg-{i}")
                 for i in range(100)
             ]
             results = await asyncio.gather(*tasks)
@@ -256,23 +266,25 @@ class TestNameCollision:
 class TestLargePayload:
     async def test_1mb_through_flat_map(self):
         """1MB string through a 3-step pipeline."""
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             big = "x" * 1_000_000
             flow = agent(Echo).flat_map(agent(Echo)).flat_map(agent(Echo))
-            result = await interpret(flow, big, system)
+            result = await interp.run(flow, big)
             assert len(result) == 1_000_000
         finally:
             await system.shutdown()
 
     async def test_large_payload_through_zip(self):
         """Two 500KB strings through parallel zip."""
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             big_a = "a" * 500_000
             big_b = "b" * 500_000
             flow = agent(Echo).zip(agent(Echo))
-            result = await interpret(flow, (big_a, big_b), system)
+            result = await interp.run(flow, (big_a, big_b))
             assert len(result[0]) == 500_000
             assert len(result[1]) == 500_000
         finally:
@@ -290,11 +302,12 @@ class TestPartialFailure:
             async def execute(self, input: str) -> str:
                 raise ValueError("second-failed")
 
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = agent(Echo).zip(agent(FailSecond))
             with pytest.raises(ValueError, match="second-failed"):
-                await interpret(flow, ("ok", "fail"), system)
+                await interp.run(flow, ("ok", "fail"))
         finally:
             await system.shutdown()
 
@@ -308,12 +321,13 @@ class TestPartialFailure:
                 await asyncio.sleep(0.1)
                 return input
 
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flows = [agent(FailOnThree) for _ in range(5)]
             f = zip_all(*flows)
             with pytest.raises(ValueError, match="three-failed"):
-                await interpret(f, [1, 2, 3, 4, 5], system)
+                await interp.run(f, [1, 2, 3, 4, 5])
         finally:
             await system.shutdown()
 
@@ -324,7 +338,8 @@ class TestPartialFailure:
             async def execute(self, input: str) -> str:
                 raise ValueError("instant-fail")
 
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             # InstantFail completes first (with error), but race takes first COMPLETED
             # asyncio.wait FIRST_COMPLETED returns both success and failure
@@ -333,7 +348,7 @@ class TestPartialFailure:
             flow = race(agent(InstantFail), agent(SlowAgent))
             # Current behavior: first completed wins, even if it's an error
             with pytest.raises(ValueError, match="instant-fail"):
-                await interpret(flow, "test", system)
+                await interp.run(flow, "test")
         finally:
             await system.shutdown()
 
@@ -351,10 +366,11 @@ class TestStreamingAdversarial:
                 await self.emit_progress("step-2")
                 return f"done:{input}"
 
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             events = []
-            async for event in interpret_stream(agent(ProgressAgent), "test", system):
+            async for event in interp.run_stream(agent(ProgressAgent), "test"):
                 events.append(event)
 
             types = [e.type for e in events]
@@ -371,11 +387,12 @@ class TestStreamingAdversarial:
             async def execute(self, input: str) -> str:
                 raise ValueError("fail")
 
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = agent(FailAgent).recover_with(agent(Echo))
             events = []
-            async for event in interpret_stream(flow, "test", system):
+            async for event in interp.run_stream(flow, "test"):
                 events.append(event)
 
             # Should have events from the recovery agent
@@ -392,11 +409,12 @@ class TestStreamingAdversarial:
                 await self.emit_progress("working")
                 return input
 
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = agent(EmittingAgent).map(str.upper)
             events = []
-            async for event in interpret_stream(flow, "test", system):
+            async for event in interp.run_stream(flow, "test"):
                 events.append(event)
 
             types = [e.type for e in events]
@@ -412,11 +430,12 @@ class TestStreamingAdversarial:
 class TestRepeatStability:
     async def test_same_flow_50_times(self):
         """Same flow executed 50 times — no state leakage between runs."""
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = agent(Echo).map(lambda x: f"[{x}]")
             for i in range(50):
-                result = await interpret(flow, f"run-{i}", system)
+                result = await interp.run(flow, f"run-{i}")
                 assert result == f"[run-{i}]"
         finally:
             await system.shutdown()
@@ -430,11 +449,12 @@ class TestRepeatStability:
                     return Done(value="done")
                 return Continue(value=input - 1)
 
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = loop(agent(CountDown), max_iter=20)
             for n in [3, 5, 1, 10]:
-                result = await interpret(flow, n, system)
+                result = await interp.run(flow, n)
                 assert result == "done"
         finally:
             await system.shutdown()
@@ -452,12 +472,13 @@ class TestTimingCorrectness:
                 await asyncio.sleep(0.1)
                 return input
 
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flows = [agent(Sleep100ms) for _ in range(5)]
             f = zip_all(*flows)
             start = time.monotonic()
-            await interpret(f, ["a", "b", "c", "d", "e"], system)
+            await interp.run(f, ["a", "b", "c", "d", "e"])
             elapsed = time.monotonic() - start
             # Should be ~0.1s, definitely less than 0.3s
             assert elapsed < 0.3, f"zip_all took {elapsed:.2f}s, expected ~0.1s"
@@ -477,10 +498,11 @@ class TestTimingCorrectness:
                 await asyncio.sleep(0.2)
                 return "slow"
 
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = race(agent(Fast), agent(Slow))
-            result = await interpret(flow, "go", system)
+            result = await interp.run(flow, "go")
             # Correctness: fast agent wins
             assert result == "fast"
             # Note: total wall time includes loser cleanup (await gather),

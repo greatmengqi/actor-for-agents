@@ -128,6 +128,8 @@ Design constraints:
 - Do not assert internal state (e.g., `_active_runs` dict contents) unless testing the specific invariant
 - Concurrency and cleanup tests must use real `asyncio` — no mocking of `asyncio.wait`, `asyncio.gather`, or task scheduling
 - A passing test that relies on mocked internals is worse than no test
+- Every async test file **must** have `pytestmark = pytest.mark.anyio` at module level — without it, async tests silently fail with "async def functions are not natively supported"
+- Do not use `pytest.mark.asyncio` — the project uses `anyio` as the async backend
 
 ## Progressive API
 

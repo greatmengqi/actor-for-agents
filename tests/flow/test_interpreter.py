@@ -5,9 +5,10 @@ from dataclasses import dataclass
 
 import pytest
 
+from everything_is_an_actor.core.system import ActorSystem
 from everything_is_an_actor.agents import AgentActor, AgentSystem
 from everything_is_an_actor.flow import Continue, Done, FlowFilterError, agent, loop, loop_with_state, pure, race
-from everything_is_an_actor.flow.interpreter import interpret
+from everything_is_an_actor.flow.interpreter import Interpreter
 
 pytestmark = pytest.mark.anyio
 
@@ -99,38 +100,43 @@ class Accumulator(AgentActor[tuple, tuple]):
 
 class TestBasic:
     async def test_agent(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
-            assert await interpret(agent(Echo), "hello", system) == "hello"
+            assert await interp.run(agent(Echo), "hello") == "hello"
         finally:
             await system.shutdown()
 
     async def test_pure(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
-            assert await interpret(pure(str.upper), "hello", system) == "HELLO"
+            assert await interp.run(pure(str.upper), "hello") == "HELLO"
         finally:
             await system.shutdown()
 
     async def test_map(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
-            assert await interpret(agent(Echo).map(str.upper), "hello", system) == "HELLO"
+            assert await interp.run(agent(Echo).map(str.upper), "hello") == "HELLO"
         finally:
             await system.shutdown()
 
     async def test_flat_map(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
-            assert await interpret(agent(Echo).flat_map(agent(Upper)), "hello", system) == "HELLO"
+            assert await interp.run(agent(Echo).flat_map(agent(Upper)), "hello") == "HELLO"
         finally:
             await system.shutdown()
 
     async def test_chain(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = agent(Echo).map(lambda s: s + "!").flat_map(agent(Upper))
-            assert await interpret(flow, "hi", system) == "HI!"
+            assert await interp.run(flow, "hi") == "HI!"
         finally:
             await system.shutdown()
 
@@ -140,21 +146,23 @@ class TestBasic:
 
 class TestZip:
     async def test_zip(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = agent(Echo).zip(agent(Upper))
-            assert await interpret(flow, ("hello", "world"), system) == ("hello", "WORLD")
+            assert await interp.run(flow, ("hello", "world")) == ("hello", "WORLD")
         finally:
             await system.shutdown()
 
     async def test_zip_is_concurrent(self):
         import time
 
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = agent(Slow).zip(agent(Slow))
             start = time.monotonic()
-            result = await interpret(flow, ("a", "b"), system)
+            result = await interp.run(flow, ("a", "b"))
             assert time.monotonic() - start < 0.25
             assert result == ("slow:a", "slow:b")
         finally:
@@ -166,45 +174,50 @@ class TestZip:
 
 class TestBranch:
     async def test_routes_simple(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = agent(Classifier).branch({SimpleQ: agent(SimpleHandler), ComplexQ: agent(ComplexHandler)})
-            assert await interpret(flow, "hi", system) == "simple:hi"
+            assert await interp.run(flow, "hi") == "simple:hi"
         finally:
             await system.shutdown()
 
     async def test_routes_complex(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = agent(Classifier).branch({SimpleQ: agent(SimpleHandler), ComplexQ: agent(ComplexHandler)})
-            assert await interpret(flow, "this is a long complex query", system) == "complex:this is a long complex query"
+            assert await interp.run(flow, "this is a long complex query") == "complex:this is a long complex query"
         finally:
             await system.shutdown()
 
     async def test_unmatched_raises(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = agent(Classifier).branch({ComplexQ: agent(ComplexHandler)})
             with pytest.raises(KeyError):
-                await interpret(flow, "hi", system)
+                await interp.run(flow, "hi")
         finally:
             await system.shutdown()
 
 
 class TestBranchOn:
     async def test_true_branch(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = agent(Length).branch_on(lambda x: x > 5, then=pure(lambda x: f"long:{x}"), otherwise=pure(lambda x: f"short:{x}"))
-            assert await interpret(flow, "hello world", system) == "long:11"
+            assert await interp.run(flow, "hello world") == "long:11"
         finally:
             await system.shutdown()
 
     async def test_false_branch(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = agent(Length).branch_on(lambda x: x > 5, then=pure(lambda x: f"long:{x}"), otherwise=pure(lambda x: f"short:{x}"))
-            assert await interpret(flow, "hi", system) == "short:2"
+            assert await interp.run(flow, "hi") == "short:2"
         finally:
             await system.shutdown()
 
@@ -214,43 +227,48 @@ class TestBranchOn:
 
 class TestRecover:
     async def test_recover_catches(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = agent(Failing).recover(lambda e: f"recovered: {e}")
-            assert "recovered:" in await interpret(flow, "test", system)
+            assert "recovered:" in await interp.run(flow, "test")
         finally:
             await system.shutdown()
 
     async def test_recover_passthrough(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
-            assert await interpret(agent(Echo).recover(lambda e: "nope"), "ok", system) == "ok"
+            assert await interp.run(agent(Echo).recover(lambda e: "nope"), "ok") == "ok"
         finally:
             await system.shutdown()
 
 
 class TestRecoverWith:
     async def test_recover_with_flow(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = agent(Failing).recover_with(pure(lambda e: f"flow-recovered: {type(e).__name__}"))
-            assert await interpret(flow, "test", system) == "flow-recovered: ValueError"
+            assert await interp.run(flow, "test") == "flow-recovered: ValueError"
         finally:
             await system.shutdown()
 
 
 class TestFallbackTo:
     async def test_fallback_on_failure(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
-            assert await interpret(agent(Failing).fallback_to(agent(Echo)), "test", system) == "test"
+            assert await interp.run(agent(Failing).fallback_to(agent(Echo)), "test") == "test"
         finally:
             await system.shutdown()
 
     async def test_no_fallback_on_success(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
-            assert await interpret(agent(Echo).fallback_to(agent(Upper)), "hello", system) == "hello"
+            assert await interp.run(agent(Echo).fallback_to(agent(Upper)), "hello") == "hello"
         finally:
             await system.shutdown()
 
@@ -260,18 +278,20 @@ class TestFallbackTo:
 
 class TestRace:
     async def test_returns_first(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
-            assert await interpret(race(agent(Echo), agent(Slow)), "test", system) == "test"
+            assert await interp.run(race(agent(Echo), agent(Slow)), "test") == "test"
         finally:
             await system.shutdown()
 
     async def test_cancels_losers(self):
         """Winner returns correct result; loser is cancelled and cleaned up."""
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = race(agent(Echo), agent(SlowForever))
-            result = await interpret(flow, "fast", system)
+            result = await interp.run(flow, "fast")
             assert result == "fast"
         finally:
             await system.shutdown()
@@ -282,24 +302,27 @@ class TestRace:
 
 class TestLoop:
     async def test_terminates_on_done(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
-            assert await interpret(loop(agent(CountDown), max_iter=10), 3, system) == "done!"
+            assert await interp.run(loop(agent(CountDown), max_iter=10), 3) == "done!"
         finally:
             await system.shutdown()
 
     async def test_single_iteration(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
-            assert await interpret(loop(agent(CountDown), max_iter=10), 0, system) == "done!"
+            assert await interp.run(loop(agent(CountDown), max_iter=10), 0) == "done!"
         finally:
             await system.shutdown()
 
     async def test_max_iter_exceeded(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             with pytest.raises(RuntimeError, match="max_iter"):
-                await interpret(loop(agent(AlwaysContinue), max_iter=3), "stuck", system)
+                await interp.run(loop(agent(AlwaysContinue), max_iter=3), "stuck")
         finally:
             await system.shutdown()
 
@@ -315,10 +338,11 @@ class TestDivertTo:
             async def execute(self, input: str) -> None:
                 side_log.append(input)
 
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = agent(Echo).divert_to(agent(Logger), when=lambda x: len(x) > 3)
-            result = await interpret(flow, "hello", system)
+            result = await interp.run(flow, "hello")
             assert result == "hello"
             await asyncio.sleep(0.15)
             assert side_log == ["hello"]
@@ -326,10 +350,11 @@ class TestDivertTo:
             await system.shutdown()
 
     async def test_skips_when_false(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = agent(Echo).divert_to(agent(Echo), when=lambda x: len(x) > 100)
-            assert await interpret(flow, "hi", system) == "hi"
+            assert await interp.run(flow, "hi") == "hi"
         finally:
             await system.shutdown()
 
@@ -337,10 +362,11 @@ class TestDivertTo:
 class TestAndThen:
     async def test_runs_callback(self):
         captured: list[str] = []
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = agent(Echo).and_then(lambda x: captured.append(x))
-            assert await interpret(flow, "hello", system) == "hello"
+            assert await interp.run(flow, "hello") == "hello"
             assert captured == ["hello"]
         finally:
             await system.shutdown()
@@ -348,17 +374,19 @@ class TestAndThen:
 
 class TestFilter:
     async def test_passes(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
-            assert await interpret(agent(Echo).filter(lambda x: len(x) > 0), "ok", system) == "ok"
+            assert await interp.run(agent(Echo).filter(lambda x: len(x) > 0), "ok") == "ok"
         finally:
             await system.shutdown()
 
     async def test_rejects(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             with pytest.raises(FlowFilterError):
-                await interpret(agent(Echo).filter(lambda x: len(x) > 10), "hi", system)
+                await interp.run(agent(Echo).filter(lambda x: len(x) > 10), "hi")
         finally:
             await system.shutdown()
 
@@ -368,17 +396,19 @@ class TestFilter:
 
 class TestLoopWithState:
     async def test_accumulates(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = loop_with_state(agent(Accumulator), init_state=list, max_iter=10)
-            assert await interpret(flow, "start", system) == "collected:start,next-1,next-2"
+            assert await interp.run(flow, "start") == "collected:start,next-1,next-2"
         finally:
             await system.shutdown()
 
     async def test_callable_init(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             flow = loop_with_state(agent(Accumulator), init_state=list, max_iter=10)
-            assert await interpret(flow, "go", system) == "collected:go,next-1,next-2"
+            assert await interp.run(flow, "go") == "collected:go,next-1,next-2"
         finally:
             await system.shutdown()

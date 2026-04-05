@@ -1,8 +1,9 @@
 """End-to-end: full pipeline with multiple primitives."""
 
 import pytest
+from everything_is_an_actor.core.system import ActorSystem
 from everything_is_an_actor.agents import AgentActor, AgentSystem
-from everything_is_an_actor.flow import Continue, Done, agent, interpret, loop, pure, to_dict, to_mermaid
+from everything_is_an_actor.flow import Continue, Done, Interpreter, agent, loop, pure, to_dict, to_mermaid
 
 pytestmark = pytest.mark.anyio
 
@@ -54,9 +55,10 @@ class TestE2E:
             .recover_with(agent(Fallback))
         )
 
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
-            result = await interpret(pipeline, ("query", "query"), system)
+            result = await interp.run(pipeline, ("query", "query"))
             assert "approved:" in result
             assert "written:" in result
         finally:

@@ -10,14 +10,15 @@ from types import MappingProxyType
 
 import pytest
 
+from everything_is_an_actor.core.system import ActorSystem
 from everything_is_an_actor.agents import AgentActor, AgentSystem
 from everything_is_an_actor.flow import (
     Continue,
     Done,
     Flow,
     FlowFilterError,
+    Interpreter,
     agent,
-    interpret,
     loop,
     loop_with_state,
     pure,
@@ -33,7 +34,6 @@ from everything_is_an_actor.flow.flow import (
     _Race,
     _ZipAll,
 )
-from everything_is_an_actor.flow.interpreter import interpret_stream
 from everything_is_an_actor.flow.serialize import from_dict, to_dict
 
 pytestmark = pytest.mark.anyio
@@ -159,20 +159,22 @@ class TestZipAll:
             zip_all(agent(Echo))
 
     async def test_interpret_three_way(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             f = zip_all(agent(Echo), agent(Echo), agent(Echo))
-            result = await interpret(f, ["a", "b", "c"], system)
+            result = await interp.run(f, ["a", "b", "c"])
             assert result == ["a", "b", "c"]
         finally:
             await system.shutdown()
 
     async def test_interpret_one_fails_cancels_all(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             f = zip_all(agent(Echo), agent(Failing), agent(Echo))
             with pytest.raises(ValueError, match="boom"):
-                await interpret(f, ["a", "b", "c"], system)
+                await interp.run(f, ["a", "b", "c"])
         finally:
             await system.shutdown()
 
@@ -182,29 +184,32 @@ class TestZipAll:
 
 class TestLoopErrors:
     async def test_body_returns_neither_continue_nor_done(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             f = loop(agent(BadLoopBody), max_iter=3)
             with pytest.raises(TypeError, match="must return Continue or Done"):
-                await interpret(f, "test", system)
+                await interp.run(f, "test")
         finally:
             await system.shutdown()
 
     async def test_loop_with_state_body_returns_non_tuple(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             f = loop_with_state(agent(BadLoopWithStateBody), init_state=list, max_iter=3)
             with pytest.raises(TypeError, match="must return.*tuple"):
-                await interpret(f, "test", system)
+                await interp.run(f, "test")
         finally:
             await system.shutdown()
 
     async def test_loop_with_state_body_returns_bad_control(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             f = loop_with_state(agent(BadLoopWithStateControl), init_state=list, max_iter=3)
             with pytest.raises(TypeError, match="Continue|Done"):
-                await interpret(f, "test", system)
+                await interp.run(f, "test")
         finally:
             await system.shutdown()
 
@@ -214,11 +219,12 @@ class TestLoopErrors:
                 current, state = input
                 return (Continue(value=current), state)
 
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             f = loop_with_state(agent(StatefulContinue), init_state=list, max_iter=2)
             with pytest.raises(RuntimeError, match="max_iter"):
-                await interpret(f, "stuck", system)
+                await interp.run(f, "stuck")
         finally:
             await system.shutdown()
 
@@ -228,11 +234,12 @@ class TestLoopErrors:
 
 class TestRaceErrors:
     async def test_all_racers_fail(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             f = race(agent(Failing), agent(Failing))
             with pytest.raises(ValueError, match="boom"):
-                await interpret(f, "test", system)
+                await interp.run(f, "test")
         finally:
             await system.shutdown()
 
@@ -242,20 +249,22 @@ class TestRaceErrors:
 
 class TestZipErrors:
     async def test_left_fails_cancels_right(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             f = agent(Failing).zip(agent(SlowEcho))
             with pytest.raises(ValueError, match="boom"):
-                await interpret(f, ("test", "test"), system)
+                await interp.run(f, ("test", "test"))
         finally:
             await system.shutdown()
 
     async def test_right_fails_cancels_left(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             f = agent(SlowEcho).zip(agent(Failing))
             with pytest.raises(ValueError, match="boom"):
-                await interpret(f, ("test", "test"), system)
+                await interp.run(f, ("test", "test"))
         finally:
             await system.shutdown()
 
@@ -265,24 +274,26 @@ class TestZipErrors:
 
 class TestBranchEdges:
     async def test_unmatched_type_error_message(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             f = agent(ClassifyAB).branch({TypeA: agent(HandleA)})
             with pytest.raises(KeyError, match="TypeB"):
-                await interpret(f, "this is long enough", system)
+                await interp.run(f, "this is long enough")
         finally:
             await system.shutdown()
 
     async def test_branch_on_with_pure_branches(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             f = agent(ReturnInt).branch_on(
                 lambda x: x == 0,
                 then=pure(lambda _: "empty"),
                 otherwise=pure(lambda x: f"len={x}"),
             )
-            assert await interpret(f, "", system) == "empty"
-            assert await interpret(f, "abc", system) == "len=3"
+            assert await interp.run(f, "") == "empty"
+            assert await interp.run(f, "abc") == "len=3"
         finally:
             await system.shutdown()
 
@@ -292,11 +303,12 @@ class TestBranchEdges:
 
 class TestFilterEdges:
     async def test_filter_error_carries_value(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             f = agent(Echo).filter(lambda x: False)
             with pytest.raises(FlowFilterError) as exc_info:
-                await interpret(f, "rejected", system)
+                await interp.run(f, "rejected")
             assert exc_info.value.value == "rejected"
         finally:
             await system.shutdown()
@@ -307,19 +319,21 @@ class TestFilterEdges:
 
 class TestRecoverChain:
     async def test_nested_recover(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             f = agent(Failing).recover(lambda e: "recovered-1").map(lambda x: x + "!")
-            result = await interpret(f, "test", system)
+            result = await interp.run(f, "test")
             assert result == "recovered-1!"
         finally:
             await system.shutdown()
 
     async def test_fallback_chain(self):
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             f = agent(Failing).fallback_to(agent(Failing)).fallback_to(agent(Echo))
-            result = await interpret(f, "saved", system)
+            result = await interp.run(f, "saved")
             assert result == "saved"
         finally:
             await system.shutdown()
@@ -397,10 +411,11 @@ class TestUnknownVariant:
         class _FakeFlow(Flow):
             pass
 
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             with pytest.raises(NotImplementedError, match="does not handle"):
-                await interpret(_FakeFlow(), "test", system)
+                await interp.run(_FakeFlow(), "test")
         finally:
             await system.shutdown()
 
@@ -414,10 +429,11 @@ class TestDivertToErrors:
             async def execute(self, input: str) -> None:
                 raise RuntimeError("side failed")
 
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             f = agent(Echo).divert_to(agent(FailingSide), when=lambda x: True)
-            result = await interpret(f, "hello", system)
+            result = await interp.run(f, "hello")
             assert result == "hello"
             await asyncio.sleep(0.2)  # let fire-and-forget settle
         finally:
@@ -442,10 +458,11 @@ class TestAgentTimeout:
                 await asyncio.sleep(10)
                 return input
 
-        system = AgentSystem()
+        system = AgentSystem(ActorSystem())
+        interp = Interpreter(system)
         try:
             f = agent(VerySlowAgent, timeout=0.1)
             with pytest.raises(asyncio.TimeoutError):
-                await interpret(f, "test", system)
+                await interp.run(f, "test")
         finally:
             await system.shutdown()
