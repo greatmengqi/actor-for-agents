@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable, TypeVar, Union
 
 from everything_is_an_actor.flow.flow import (
+    Continue,
+    Done,
     Flow,
     _Agent,
     _Loop,
@@ -14,13 +16,19 @@ from everything_is_an_actor.flow.flow import (
     _ZipAll,
 )
 
+if TYPE_CHECKING:
+    from everything_is_an_actor.agents.agent_actor import AgentActor
 
-def agent(cls: type, *, timeout: float = 30.0) -> Flow:
+I = TypeVar("I")
+O = TypeVar("O")
+
+
+def agent(cls: type[AgentActor[I, O]], *, timeout: float = 30.0) -> Flow[I, O]:
     """Lift an AgentActor class into a Flow node."""
     return _Agent(cls=cls, timeout=timeout)
 
 
-def pure(f: Any) -> Flow:
+def pure(f: Callable[[I], O]) -> Flow[I, O]:
     """Lift a pure function into a Flow node."""
     return _Pure(f=f)
 
@@ -32,14 +40,14 @@ def zip_all(*flows: Flow) -> Flow:
     return _ZipAll(flows=list(flows))
 
 
-def race(*flows: Flow) -> Flow:
+def race(*flows: Flow[I, O]) -> Flow[I, O]:
     """Competitive parallelism — first to complete wins, others cancelled."""
     if len(flows) < 2:
         raise ValueError("race() requires at least 2 flows")
     return _Race(flows=list(flows))
 
 
-def loop(body: Flow, *, max_iter: int = 10) -> Flow:
+def loop(body: Flow[I, Union[Continue[I], Done[O]]], *, max_iter: int = 10) -> Flow[I, O]:
     """tailRecM — iterate body until it returns Done, with safety bound."""
     return _Loop(body=body, max_iter=max_iter)
 
