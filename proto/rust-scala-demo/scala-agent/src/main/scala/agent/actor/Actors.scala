@@ -1,68 +1,57 @@
 package agent.actor
 
 // ══════════════════════════════════════════════════════════════
-// 用 Actor API 写的示例
+// 内置 Actor 示例
 //
-// 对比 raw Ctx 写法:
-//   def assistant(ctx: Ctx, msg: String): String =
-//     val history = ctx.effect(LoadState("chat_history"))
-//     val response = ctx.effect(Ask("llm", prompt))
-//
-// Actor 写法:
-//   class AssistantActor extends Actor:
-//     def receive(msg: String)(using ctx: ActorContext): String =
-//       val history = ctx.load("chat_history")
-//       val response = llm.ask(prompt)
-//
-// 区别: ActorRef 类型安全 + 语义清晰
+// 无状态:   extends Actor          → receive(msg)
+// 有状态:   extends StatefulActor  → receive(msg, state) => (result, newState)
 // ══════════════════════════════════════════════════════════════
 
-// ── LLM actor: 包装 LLM 调用 ──
+// ── 无状态: LLM 代理 ──
 
 object LlmActor extends Actor:
   def receive(msg: String)(using ctx: ActorContext): String =
-    // 这里可以加 prompt engineering、token 计数等逻辑
-    ctx.emit(s"[LLM] Processing: ${msg.take(50)}...")
-    // 实际调用走 effect，Rust 侧对接真实 LLM API
+    ctx.emit(s"[LLM] Processing...")
     ctx.raw.effect(agent.AgentOp.Ask("llm_api", msg))
 
-// ── 翻译 actor ──
+// ── 有状态: 聊天助手 ──
 
-object TranslatorActor extends Actor:
-  private val llm = ActorRef[String]("llm_actor")
+case class ChatState(history: String = "", messageCount: Int = 0)
 
-  def receive(msg: String)(using ctx: ActorContext): String =
-    llm.ask(s"Translate to English: $msg")
+object ChatActor extends StatefulActor[ChatState]:
+  private val llm   = ActorRef[String]("llm_actor")
+  private val audit = ActorRef[String]("audit_actor")
 
-// ── 聊天助手 actor ──
+  def initial = ChatState()
+  def encode(s: ChatState) = s"${s.messageCount}\n${s.history}"
+  def decode(raw: String) =
+    val i = raw.indexOf('\n')
+    if i < 0 then ChatState() else ChatState(raw.substring(i + 1), raw.substring(0, i).toInt)
 
-object ChatActor extends Actor:
-  private val llm    = ActorRef[String]("llm_actor")
-  private val audit  = ActorRef[String]("audit_actor")
+  def receive(msg: String, state: ChatState)(using ctx: ActorContext): (String, ChatState) =
+    val prompt = if state.history.isEmpty then s"User: $msg"
+                 else s"${state.history}\nUser: $msg"
 
-  def receive(msg: String)(using ctx: ActorContext): String =
-    val history = ctx.load("chat_history")
-    val prompt  = if history.isEmpty then s"User: $msg"
-                  else s"$history\nUser: $msg"
-
-    ctx.emit(s"Thinking about: $msg")
+    ctx.emit(s"Thinking... (message #${state.messageCount + 1})")
     val response = llm.ask(prompt)
 
     ctx.emit("Saving conversation...")
-    ctx.save("chat_history", s"$prompt\nAssistant: $response")
     audit.tell(s"processed:$msg")
 
-    response
+    val newState = ChatState(
+      history = s"$prompt\nAssistant: $response",
+      messageCount = state.messageCount + 1
+    )
+    (response, newState)
 
-// ── 审计日志 actor ──
+// ── 无状态: 审计日志 ──
 
 object AuditActor extends Actor:
   def receive(msg: String)(using ctx: ActorContext): String =
-    val log = ctx.load("audit_log")
-    ctx.save("audit_log", s"$log\n$msg")
+    ctx.emit(s"[Audit] $msg")
     "logged"
 
-// ── 研究员 actor: parallel + streaming ──
+// ── 无状态: 研究员 (parallel + streaming) ──
 
 object ResearcherActor extends Actor:
   private val sourceA = ActorRef[String]("source_a_actor")
@@ -72,38 +61,37 @@ object ResearcherActor extends Actor:
 
   def receive(msg: String)(using ctx: ActorContext): String =
     ctx.emit(s"Researching '$msg' from 3 sources...")
-
-    val combined = ctx.askAll(
-      sourceA -> msg,
-      sourceB -> msg,
-      sourceC -> msg
-    )
-
+    val combined = ctx.askAll(sourceA -> msg, sourceB -> msg, sourceC -> msg)
     ctx.emit("Summarizing results...")
     llm.ask(s"Summarize: $combined")
 
-// ── 支付 actor: supervision ──
+// ── 有状态: 支付 (supervision) ──
 
-object PaymentActor extends Actor:
-  def receive(msg: String)(using ctx: ActorContext): String =
+case class PaymentState(status: String = "pending", attempts: Int = 0)
+
+object PaymentActor extends StatefulActor[PaymentState]:
+  def initial = PaymentState()
+  def encode(s: PaymentState) = s"${s.status}|${s.attempts}"
+  def decode(raw: String) =
+    raw.split("\\|") match
+      case Array(st, att) => PaymentState(st, att.toInt)
+      case _ => PaymentState()
+
+  def receive(msg: String, state: PaymentState)(using ctx: ActorContext): (String, PaymentState) =
     ctx.withPolicy(maxRetries = 5)
-
-    val orderId = ctx.load("order_id")
-    ctx.emit(s"Processing payment for order $orderId...")
+    ctx.emit(s"Processing payment (previous: ${state.status})...")
 
     val gateway = ctx.actorRef[String]("payment_gateway")
-    val result = gateway.ask(s"charge:$msg:$orderId")
+    val result = gateway.ask(s"charge:$msg")
 
-    ctx.save("payment_status", s"completed:$result")
-    result
+    (result, PaymentState("completed", state.attempts + 1))
 
-// ── 注册所有 actor ──
+// ── 注册 ──
 
 object ActorRegistry:
   def registerAll(): Unit =
     ActorSystem.register("llm_actor", LlmActor)
-    ActorSystem.register("translator_actor", TranslatorActor)
-    ActorSystem.register("chat_actor", ChatActor)
     ActorSystem.register("audit_actor", AuditActor)
+    ActorSystem.register("chat_actor", ChatActor)
     ActorSystem.register("researcher_actor", ResearcherActor)
     ActorSystem.register("payment_actor", PaymentActor)

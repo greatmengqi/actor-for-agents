@@ -6,16 +6,16 @@ import agent.pb.agent.OnExhaust
 // ══════════════════════════════════════════════════════════════
 // 用户接入指南
 //
-// 你只需要:
-//   1. 继承 Actor，实现 receive
-//   2. 用 ActorRef 引用其他 actor
-//   3. 调 ActorSystem.register 注册
+// 无状态 actor:  extends Actor
+//   def receive(msg)(using ctx): String
 //
-// 框架处理: 序列化、恢复、重试、并行、流式输出
+// 有状态 actor:  extends StatefulActor[S]
+//   def receive(msg, state)(using ctx): (String, S)
+//   状态自动加载/保存，你不碰 load/save
 // ══════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────
-// Level 1: 最简 actor — 一个 ask 调用
+// Level 1: 最简 — 无状态，一个 ask
 // ─────────────────────────────────────────────
 
 object TranslatorExample extends Actor:
@@ -25,37 +25,39 @@ object TranslatorExample extends Actor:
     llm.ask(s"Translate to English: $msg")
 
 // ─────────────────────────────────────────────
-// Level 2: 带状态 — load / save
+// Level 2: 有状态 — 待办清单
 // ─────────────────────────────────────────────
 
-object TodoListExample extends Actor:
-  def receive(msg: String)(using ctx: ActorContext): String =
-    val raw = ctx.load("todos")
-    val todos = if raw.isEmpty then List.empty[String] else raw.split("\n").toList
+case class TodoState(items: List[String] = Nil)
 
+object TodoListExample extends StatefulActor[TodoState]:
+  def initial = TodoState()
+  def encode(s: TodoState) = s.items.mkString("\n")
+  def decode(raw: String) = TodoState(if raw.isEmpty then Nil else raw.split("\n").toList)
+
+  def receive(msg: String, state: TodoState)(using ctx: ActorContext): (String, TodoState) =
     msg.split(" ", 2) match
       case Array("add", task) =>
-        val updated = todos :+ task
-        ctx.save("todos", updated.mkString("\n"))
-        s"Added: $task (total: ${updated.size})"
+        val next = state.copy(items = state.items :+ task)
+        (s"Added: $task (total: ${next.items.size})", next)
 
       case Array("list") =>
-        if todos.isEmpty then "No todos"
-        else todos.zipWithIndex.map((t, i) => s"  ${i + 1}. $t").mkString("\n")
+        val text = if state.items.isEmpty then "No todos"
+                   else state.items.zipWithIndex.map((t, i) => s"  ${i + 1}. $t").mkString("\n")
+        (text, state)  // list 不改状态
 
       case Array("done", idx) =>
         val i = idx.toInt - 1
-        if i < 0 || i >= todos.size then s"Invalid index: $idx"
+        if i < 0 || i >= state.items.size then (s"Invalid index: $idx", state)
         else
-          val removed = todos(i)
-          val updated = todos.patch(i, Nil, 1)
-          ctx.save("todos", updated.mkString("\n"))
-          s"Done: $removed (remaining: ${updated.size})"
+          val removed = state.items(i)
+          val next = state.copy(items = state.items.patch(i, Nil, 1))
+          (s"Done: $removed (remaining: ${next.items.size})", next)
 
-      case _ => "Usage: add <task> | list | done <n>"
+      case _ => ("Usage: add <task> | list | done <n>", state)
 
 // ─────────────────────────────────────────────
-// Level 3: 流式输出 — emit
+// Level 3: 流式输出 — Code Reviewer
 // ─────────────────────────────────────────────
 
 object CodeReviewerExample extends Actor:
@@ -75,7 +77,7 @@ object CodeReviewerExample extends Actor:
     s"## Structure\n$structure\n\n## Bugs\n$bugs\n\n## Improvements\n$improvements"
 
 // ─────────────────────────────────────────────
-// Level 4: 并行 — askAll
+// Level 4: 并行 — 比价
 // ─────────────────────────────────────────────
 
 object PriceCompareExample extends Actor:
@@ -86,67 +88,46 @@ object PriceCompareExample extends Actor:
 
   def receive(msg: String)(using ctx: ActorContext): String =
     ctx.emit(s"Querying 3 suppliers for '$msg'...")
-
-    val results = ctx.askAll(
-      supplierA -> s"price:$msg",
-      supplierB -> s"price:$msg",
-      supplierC -> s"price:$msg"
-    )
-
+    val results = ctx.askAll(supplierA -> s"price:$msg", supplierB -> s"price:$msg", supplierC -> s"price:$msg")
     ctx.emit("Comparing prices...")
     llm.ask(s"Which is cheapest? $results")
 
 // ─────────────────────────────────────────────
-// Level 5: 容错 — withPolicy
+// Level 5: 组合 — 招聘（状态 + 并行 + 流式 + 容错）
 // ─────────────────────────────────────────────
 
-object PaymentExample extends Actor:
-  private val gateway = ActorRef[String]("payment_gateway")
+case class RecruitState(evaluations: Int = 0, lastResult: String = "")
 
-  def receive(msg: String)(using ctx: ActorContext): String =
-    ctx.withPolicy(maxRetries = 5)
+object RecruiterExample extends StatefulActor[RecruitState]:
+  private val techEval = ActorRef[String]("tech_evaluator")
+  private val culture  = ActorRef[String]("culture_fit")
+  private val bgCheck  = ActorRef[String]("background_check")
+  private val llm      = ActorRef[String]("llm_actor")
+  private val hr       = ActorRef[String]("hr_team")
 
-    val orderId = ctx.load("order_id")
-    ctx.emit(s"Processing payment for order $orderId...")
+  def initial = RecruitState()
+  def encode(s: RecruitState) = s"${s.evaluations}|${s.lastResult}"
+  def decode(raw: String) =
+    raw.split("\\|", 2) match
+      case Array(n, r) => RecruitState(n.toInt, r)
+      case _ => RecruitState()
 
-    val result = gateway.ask(s"charge:$msg:$orderId")
-
-    ctx.save("payment_status", s"completed:$result")
-    val notify = ctx.actorRef[String]("notification")
-    notify.tell(s"Payment completed: $orderId")
-    result
-
-// ─────────────────────────────────────────────
-// Level 6: 组合 — 完整工作流
-// ─────────────────────────────────────────────
-
-object RecruiterExample extends Actor:
-  private val techEval  = ActorRef[String]("tech_evaluator")
-  private val culture   = ActorRef[String]("culture_fit")
-  private val bgCheck   = ActorRef[String]("background_check")
-  private val llm       = ActorRef[String]("llm_actor")
-  private val hr        = ActorRef[String]("hr_team")
-
-  def receive(msg: String)(using ctx: ActorContext): String =
+  def receive(msg: String, state: RecruitState)(using ctx: ActorContext): (String, RecruitState) =
     ctx.withPolicy(maxRetries = 3)
+    ctx.emit(s"Evaluation #${state.evaluations + 1} for: $msg")
 
-    val profile = ctx.load("candidate_profile")
-    ctx.emit(s"Evaluating candidate for: $msg")
-
-    // 并行: 技术 + 文化 + 背景
     val assessments = ctx.askAll(
-      techEval -> s"Evaluate skills for '$msg': $profile",
-      culture  -> s"Check culture fit: $profile",
-      bgCheck  -> s"Verify background: $profile"
+      techEval -> s"Evaluate skills for '$msg'",
+      culture  -> s"Check culture fit",
+      bgCheck  -> s"Verify background"
     )
 
     ctx.emit("All assessments complete, generating recommendation...")
-    val recommendation = llm.ask(s"Based on these assessments, should we hire?\n$assessments")
+    val recommendation = llm.ask(s"Should we hire?\n$assessments")
 
-    ctx.save("evaluation_result", recommendation)
-    hr.tell(s"Evaluation complete for $msg: $recommendation")
+    hr.tell(s"Evaluation complete for $msg")
 
-    recommendation
+    (recommendation, RecruitState(state.evaluations + 1, recommendation))
 
 // ─────────────────────────────────────────────
 // 注册
@@ -158,5 +139,4 @@ object ExampleRegistry:
     ActorSystem.register("todo_ex", TodoListExample)
     ActorSystem.register("code_reviewer_ex", CodeReviewerExample)
     ActorSystem.register("price_compare_ex", PriceCompareExample)
-    ActorSystem.register("payment_ex", PaymentExample)
     ActorSystem.register("recruiter_ex", RecruiterExample)

@@ -4,51 +4,38 @@ import agent.{AgentOp, Ctx}
 import agent.AgentOp.*
 
 // ══════════════════════════════════════════════════════════════
-// Actor API — 基于 effect 系统的类型安全抽象
+// Actor API
 //
-// 用户视角:
-//   class MyActor extends Actor:
-//     def receive(ctx: ActorContext, msg: String): String = ...
+// 两种 actor:
+//   Actor              — 无状态，纯函数
+//   StatefulActor[S]   — 有状态，框架管 load/save
 //
-// 底层:
-//   ref.ask(msg)   → ctx.effect(Ask(ref.id, msg))
-//   ref.tell(msg)  → ctx.effect(Tell(ref.id, msg))
-//   ctx.spawn(...)  → ctx.effect(Ask("__system__", "spawn:type:id"))
+// 用户不调 load/save，状态是 receive 的参数和返回值:
+//   def receive(msg, state) => (result, newState)
 //
-// Actor API 是纯 Scala 类型体操，Rust 侧零改动。
+// 底层: ref.ask(msg) → ctx.effect(Ask(ref.id, msg))
+//       状态 → 框架在首次自动 LoadState，结束时自动 SaveState
 // ══════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────
-// ActorRef — 类型安全的 actor 引用
+// ActorRef
 // ─────────────────────────────────────────────
 
-/** 指向一个 actor 的引用，只能发送它接受的消息类型 */
 class ActorRef[M](val id: String):
-  /** 发消息，不等回复 */
   def tell(msg: M)(using ctx: ActorContext): Unit =
     ctx.raw.effect(Tell(id, msg.toString))
 
-  /** 发消息，等回复 */
   def ask(msg: M)(using ctx: ActorContext): String =
     ctx.raw.effect(Ask(id, msg.toString))
 
   override def toString: String = s"ActorRef($id)"
 
 // ─────────────────────────────────────────────
-// ActorContext — actor 内部可用的上下文
+// ActorContext — 通信 + 输出能力，不含状态
 // ─────────────────────────────────────────────
 
-/** 包装 Ctx，暴露 actor 友好的 API */
 class ActorContext private[actor] (private[actor] val raw: Ctx, val self: ActorRef[?]):
-
-  /** 获取另一个 actor 的引用 */
   def actorRef[M](id: String): ActorRef[M] = ActorRef[M](id)
-
-  /** 状态读取 */
-  def load(key: String): String = raw.effect(LoadState(key))
-
-  /** 状态写入 */
-  def save(key: String, value: String): Unit = raw.effect(SaveState(key, value))
 
   /** 流式输出 */
   def emit(item: String): Unit = raw.emit(item)
@@ -57,33 +44,70 @@ class ActorContext private[actor] (private[actor] val raw: Ctx, val self: ActorR
   def askAll(refs: (ActorRef[?], String)*): String =
     raw.parallel(refs.map((ref, msg) => Ask(ref.id, msg.toString))*)
 
-  /** 声明容错策略 */
+  /** 容错策略 */
   def withPolicy(maxRetries: Int, onExhaust: agent.pb.agent.OnExhaust = agent.pb.agent.OnExhaust.STOP): Unit =
     raw.withPolicy(maxRetries, onExhaust)
 
 // ─────────────────────────────────────────────
-// Actor trait — 用户继承这个
+// Actor — 无状态
 // ─────────────────────────────────────────────
 
-/** 定义一个 actor 的行为 */
 trait Actor:
-  /** 处理消息，返回结果 */
   def receive(msg: String)(using ctx: ActorContext): String
 
 // ─────────────────────────────────────────────
-// ActorSystem — actor 注册表 + 桥接到 Interpreter
+// StatefulActor[S] — 有状态
+//
+//   状态是 receive 的参数和返回值
+//   框架负责 load 初始状态 + save 新状态
+//   用户永远不碰 LoadState/SaveState
+// ─────────────────────────────────────────────
+
+trait StatefulActor[S]:
+  /** 初始状态 — 首次激活时使用 */
+  def initial: S
+
+  /** 状态 → 字符串 (序列化) */
+  def encode(state: S): String
+
+  /** 字符串 → 状态 (反序列化) */
+  def decode(raw: String): S
+
+  /** 处理消息: (消息, 当前状态) => (结果, 新状态) */
+  def receive(msg: String, state: S)(using ctx: ActorContext): (String, S)
+
+// ─────────────────────────────────────────────
+// ActorSystem
 // ─────────────────────────────────────────────
 
 object ActorSystem:
-  private var actors = Map.empty[String, Actor]
+  private trait ActorEntry:
+    def run(ctx: Ctx, msg: String): String
 
-  /** 注册一个 actor 类型 */
-  def register(agentType: String, actor: Actor): Unit =
-    actors = actors + (agentType -> actor)
+  private var entries = Map.empty[String, ActorEntry]
 
-  /** 供 Interpreter 调用 — 把 actor.receive 适配为 (Ctx, String) => String */
+  def register(name: String, actor: Actor): Unit =
+    entries += name -> new ActorEntry:
+      def run(ctx: Ctx, msg: String): String =
+        given actorCtx: ActorContext = ActorContext(ctx, ActorRef(name))
+        actor.receive(msg)
+
+  def register[S](name: String, actor: StatefulActor[S]): Unit =
+    entries += name -> new ActorEntry:
+      def run(ctx: Ctx, msg: String): String =
+        given actorCtx: ActorContext = ActorContext(ctx, ActorRef(name))
+
+        // 框架自动 load 状态
+        val raw = ctx.effect(LoadState("__state__"))
+        val state = if raw.isEmpty then actor.initial else actor.decode(raw)
+
+        // 用户处理消息
+        val (result, newState) = actor.receive(msg, state)
+
+        // 框架自动 save 状态
+        ctx.effect(SaveState("__state__", actor.encode(newState)))
+
+        result
+
   def run(agentType: String, ctx: Ctx, msg: String): Option[String] =
-    actors.get(agentType).map { actor =>
-      given actorCtx: ActorContext = ActorContext(ctx, ActorRef(agentType))
-      actor.receive(msg)
-    }
+    entries.get(agentType).map(_.run(ctx, msg))
