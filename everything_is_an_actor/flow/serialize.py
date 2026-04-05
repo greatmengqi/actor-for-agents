@@ -37,8 +37,11 @@ def to_dict(flow: Flow) -> dict[str, Any]:
         )
 
     match flow:
-        case _Agent(cls=cls):
-            return {"type": "Agent", "cls": cls.__name__}
+        case _Agent(cls=cls, timeout=timeout):
+            d: dict[str, Any] = {"type": "Agent", "cls": cls.__name__}
+            if timeout != 30.0:
+                d["timeout"] = timeout
+            return d
 
         case _FlatMap(first=first, next=next_flow):
             return {"type": "FlatMap", "first": to_dict(first), "next": to_dict(next_flow)}
@@ -78,7 +81,7 @@ def from_dict(d: dict[str, Any], registry: dict[str, type]) -> Flow:
 
     match typ:
         case "Agent":
-            return _Agent(cls=registry[d["cls"]])
+            return _Agent(cls=registry[d["cls"]], timeout=d.get("timeout", 30.0))
         case "FlatMap":
             return _FlatMap(first=from_dict(d["first"], registry), next=from_dict(d["next"], registry))
         case "Zip":

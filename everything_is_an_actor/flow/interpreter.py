@@ -34,14 +34,15 @@ from everything_is_an_actor.flow.flow import (
     _Recover,
     _RecoverWith,
     _Zip,
+    _ZipAll,
 )
 
 
 async def interpret(flow: Flow, input: Any, system: AgentSystem) -> Any:
     """Recursively interpret a Flow ADT node into actor operations."""
     match flow:
-        case _Agent(cls=cls):
-            return await _interpret_agent(cls, input, system)
+        case _Agent(cls=cls, timeout=timeout):
+            return await _interpret_agent(cls, input, system, timeout=timeout)
 
         case _Pure(f=f):
             return f(input)
@@ -67,6 +68,20 @@ async def interpret(flow: Flow, input: Any, system: AgentSystem) -> Any:
                 raise
             return (left_result, right_result)
 
+        case _ZipAll(flows=flows):
+            inputs = input  # expects a list/tuple of inputs matching flows
+            tasks = [
+                asyncio.create_task(interpret(f, inp, system))
+                for f, inp in zip(flows, inputs)
+            ]
+            try:
+                return list(await asyncio.gather(*tasks))
+            except Exception:
+                for t in tasks:
+                    t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
+
         case _Branch(source=source, mapping=mapping):
             value = await interpret(source, input, system)
             for typ, branch_flow in mapping.items():
@@ -89,11 +104,13 @@ async def interpret(flow: Flow, input: Any, system: AgentSystem) -> Any:
                 done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                 for t in pending:
                     t.cancel()
-                # Don't await pending — losers clean up in background (fire-and-forget)
+                # Await cancelled tasks so actor cleanup (stop + join) runs
+                await asyncio.gather(*pending, return_exceptions=True)
                 return done.pop().result()
             except Exception:
                 for t in tasks:
                     t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
                 raise
 
         case _Recover(source=source, handler=handler):
@@ -151,14 +168,21 @@ async def interpret(flow: Flow, input: Any, system: AgentSystem) -> Any:
             current = input
             for _ in range(max_iter):
                 result = await interpret(body, (current, state), system)
-                match result:
+                # body returns (Continue/Done, new_state) tuple
+                if not isinstance(result, tuple) or len(result) != 2:
+                    raise TypeError(
+                        f"LoopWithState body must return (Continue|Done, state) tuple, got {type(result).__name__}"
+                    )
+                control, state = result
+                match control:
                     case Done(value=value):
                         return value
                     case Continue(value=value):
                         current = value
                     case _:
                         raise TypeError(
-                            f"LoopWithState body must return Continue or Done, got {type(result).__name__}"
+                            f"LoopWithState body must return (Continue|Done, state), "
+                            f"got ({type(control).__name__}, ...)"
                         )
             raise RuntimeError(f"LoopWithState exceeded max_iter ({max_iter}) without producing Done")
 
@@ -166,12 +190,14 @@ async def interpret(flow: Flow, input: Any, system: AgentSystem) -> Any:
             raise NotImplementedError(f"Interpreter does not handle {type(flow).__name__}")
 
 
-async def _interpret_agent(cls: type[AgentActor], input: Any, system: AgentSystem) -> Any:
+async def _interpret_agent(
+    cls: type[AgentActor], input: Any, system: AgentSystem, *, timeout: float = 30.0,
+) -> Any:
     """Spawn an ephemeral actor, ask, stop, return output."""
     name = f"_flow-{cls.__name__}-{uuid.uuid4().hex[:8]}"
     ref = await system.spawn(cls, name)
     try:
-        result = await ref._ask(Task(input=input), timeout=30.0)
+        result = await ref._ask(Task(input=input), timeout=timeout)
         return result.get_or_raise()
     finally:
         ref.stop()

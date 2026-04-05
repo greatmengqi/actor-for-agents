@@ -11,17 +11,25 @@ from everything_is_an_actor.flow.flow import (
     _LoopWithState,
     _Pure,
     _Race,
+    _ZipAll,
 )
 
 
-def agent(cls: type) -> Flow:
+def agent(cls: type, *, timeout: float = 30.0) -> Flow:
     """Lift an AgentActor class into a Flow node."""
-    return _Agent(cls=cls)
+    return _Agent(cls=cls, timeout=timeout)
 
 
 def pure(f: Any) -> Flow:
     """Lift a pure function into a Flow node."""
     return _Pure(f=f)
+
+
+def zip_all(*flows: Flow) -> Flow:
+    """N-way parallel — all flows run concurrently, results collected as list."""
+    if len(flows) < 2:
+        raise ValueError("zip_all() requires at least 2 flows")
+    return _ZipAll(flows=list(flows))
 
 
 def race(*flows: Flow) -> Flow:

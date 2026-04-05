@@ -123,6 +123,7 @@ class _Agent(Flow):
     """Leaf — wraps an AgentActor class."""
 
     cls: type
+    timeout: float = 30.0
 
 
 @dataclass(frozen=True)
@@ -172,6 +173,13 @@ class _BranchOn(Flow):
     predicate: Callable
     then: Flow
     otherwise: Flow
+
+
+@dataclass(frozen=True)
+class _ZipAll(Flow):
+    """N-way parallel composition — all flows run concurrently."""
+
+    flows: list  # list[Flow]
 
 
 @dataclass(frozen=True)
