@@ -136,6 +136,59 @@ Every `TaskEvent` carries `parent_task_id` and `parent_agent_path` — reconstru
 
 ---
 
+## Mixture of Agents (MOA)
+
+Layer-by-layer pipeline: each layer runs multiple proposers in parallel, then an aggregator synthesizes their outputs. Supports nested trees, partial-failure tolerance, and per-proposer timeouts.
+
+```python
+import asyncio
+from everything_is_an_actor.agents import AgentSystem, AgentActor, Task, TaskResult
+from everything_is_an_actor.moa import MoATree, MoANode, MoABuilder
+
+class SearchAgent(AgentActor[str, str]):
+    async def execute(self, input: str) -> str:
+        return f"[Search] {input}"
+
+class AnalysisAgent(AgentActor[str, str]):
+    async def execute(self, input: str) -> str:
+        return f"[Analysis] {input}"
+
+class SynthesisAgg(AgentActor[list, str]):
+    async def execute(self, input: list[TaskResult]) -> str:
+        outputs = [r.get_or_raise() for r in input if r.is_success()]
+        return " + ".join(outputs)
+
+# Declare the pipeline
+tree = MoATree(nodes=[
+    MoANode(
+        proposers=[SearchAgent, AnalysisAgent],
+        aggregator=SynthesisAgg,
+        min_success=1,          # tolerate partial failures
+        proposer_timeout=10.0,  # per-proposer timeout
+    ),
+])
+
+# Build and run — MoAAgent is a standard AgentActor
+MoAAgent = MoABuilder().build(tree)
+
+async def main():
+    system = AgentSystem("moa-demo")
+    async for event in system.run(MoAAgent, "quantum computing"):
+        if event.type == "task_completed":
+            print(event.data)
+    await system.shutdown()
+
+asyncio.run(main())
+```
+
+**Features:**
+- **Recursive nesting** — a proposer can itself be a `MoATree`
+- **Validated semantics** — failed proposers are recovered, not fail-fast; `min_success` controls the threshold
+- **Layer directives** — aggregator can return `LayerOutput(result, directive)` to steer next layer behavior
+- **Full observability** — every proposer/aggregator emits `TaskEvent` via the existing event stream
+
+---
+
 ## Virtual Actor
 
 Virtual actors activate on demand and deactivate when idle — no manual lifecycle management.
