@@ -13,6 +13,8 @@ import pytest
 from everything_is_an_actor.core.composable_stream import ComposableStream
 from everything_is_an_actor.core.composable_future import ComposableFuture
 
+pytestmark = pytest.mark.anyio
+
 
 # ------------------------------------------------------------------
 # Helpers

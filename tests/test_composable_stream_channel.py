@@ -3,6 +3,8 @@
 import asyncio
 import pytest
 
+pytestmark = pytest.mark.anyio
+
 from everything_is_an_actor.core.composable_stream import (
     BufferOverflowError,
     ComposableStream,

@@ -11,6 +11,8 @@ import threading
 
 import pytest
 
+pytestmark = pytest.mark.anyio
+
 from everything_is_an_actor.core.composable_future import ComposableFuture as Cf
 
 

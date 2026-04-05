@@ -11,7 +11,7 @@ import pytest
 
 from everything_is_an_actor.core.composable_stream import ComposableStream
 
-pytestmark = pytest.mark.asyncio
+pytestmark = pytest.mark.anyio
 
 
 # =====================================================================

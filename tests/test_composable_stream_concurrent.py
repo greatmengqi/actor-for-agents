@@ -6,6 +6,8 @@ from typing import AsyncIterator
 
 import pytest
 
+pytestmark = pytest.mark.anyio
+
 from everything_is_an_actor.core.composable_stream import ComposableStream
 
 

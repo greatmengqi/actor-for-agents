@@ -1,6 +1,8 @@
 """Tests for LangChainAgent — mocked LLM."""
 
 import pytest
+
+pytestmark = pytest.mark.anyio
 from unittest.mock import AsyncMock, MagicMock
 
 

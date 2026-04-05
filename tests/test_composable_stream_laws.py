@@ -23,6 +23,8 @@ import pytest
 
 from everything_is_an_actor.core.composable_stream import ComposableStream
 
+pytestmark = pytest.mark.anyio
+
 DATA = [1, 2, 3, 4, 5]
 
 
