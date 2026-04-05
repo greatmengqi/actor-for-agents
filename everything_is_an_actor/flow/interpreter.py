@@ -120,10 +120,7 @@ class Interpreter:
 
             case _ZipAll(flows=flows):
                 inputs = input  # expects a list/tuple of inputs matching flows
-                tasks = [
-                    asyncio.create_task(self._interpret(f, inp))
-                    for f, inp in zip(flows, inputs)
-                ]
+                tasks = [asyncio.create_task(self._interpret(f, inp)) for f, inp in zip(flows, inputs)]
                 try:
                     return list(await asyncio.gather(*tasks))
                 except Exception:
@@ -138,8 +135,7 @@ class Interpreter:
                     if isinstance(value, typ):
                         return await self._interpret(branch_flow, value)
                 raise KeyError(
-                    f"Branch: no handler for {type(value).__name__}. "
-                    f"Available: {[t.__name__ for t in mapping]}"
+                    f"Branch: no handler for {type(value).__name__}. Available: {[t.__name__ for t in mapping]}"
                 )
 
             case _BranchOn(source=source, predicate=predicate, then=then_flow, otherwise=otherwise_flow):
@@ -209,9 +205,7 @@ class Interpreter:
                         case Continue(value=value):
                             current = value
                         case _:
-                            raise TypeError(
-                                f"Loop body must return Continue or Done, got {type(result).__name__}"
-                            )
+                            raise TypeError(f"Loop body must return Continue or Done, got {type(result).__name__}")
                 raise RuntimeError(f"Loop exceeded max_iter ({max_iter}) without producing Done")
 
             case _LoopWithState(body=body, init_state=init_state, max_iter=max_iter):
@@ -241,7 +235,11 @@ class Interpreter:
                 raise NotImplementedError(f"Interpreter does not handle {type(flow).__name__}")
 
     async def _interpret_agent(
-        self, cls: type[AgentActor], input: object, *, timeout: float = 30.0,
+        self,
+        cls: type[AgentActor],
+        input: object,
+        *,
+        timeout: float = 30.0,
     ) -> object:
         """Spawn an ephemeral actor, ask, stop, return output."""
         name = f"_flow-{cls.__name__}-{uuid.uuid4().hex[:8]}"
@@ -320,7 +318,11 @@ class Interpreter:
                 return
 
     async def _interpret_agent_stream(
-        self, cls: type[AgentActor], input: object, *, timeout: float = 30.0,
+        self,
+        cls: type[AgentActor],
+        input: object,
+        *,
+        timeout: float = 30.0,
     ) -> AsyncIterator[TaskEvent]:
         """Spawn ephemeral actor, stream events via ask_stream, stop."""
         name = f"_flow-stream-{cls.__name__}-{uuid.uuid4().hex[:8]}"

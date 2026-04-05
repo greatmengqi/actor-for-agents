@@ -35,6 +35,7 @@ S = TypeVar("S")
 
 # ── Control types (loop) ─────────────────────────────────
 
+
 @dataclass(frozen=True)
 class Continue(Generic[A]):
     """Loop continues — feed value back as next iteration's input."""
@@ -146,14 +147,14 @@ class _FlatMap(Flow[I, O]):
     """Sequential composition: first then next."""
 
     first: Flow  # Flow[I, M]
-    next: Flow   # Flow[M, O]
+    next: Flow  # Flow[M, O]
 
 
 @dataclass(frozen=True)
 class _Zip(Flow):
     """Parallel composition (tensor product)."""
 
-    left: Flow   # Flow[I, O]
+    left: Flow  # Flow[I, O]
     right: Flow  # Flow[I2, O2]
 
 
@@ -162,7 +163,7 @@ class _Map(Flow[I, O]):
     """Post-compose with a pure function."""
 
     source: Flow  # Flow[I, M]
-    f: Callable   # Callable[[M], O]
+    f: Callable  # Callable[[M], O]
 
 
 @dataclass(frozen=True)

@@ -30,7 +30,13 @@ from everything_is_an_actor.flow.flow import (
 )
 
 _NOT_SERIALIZABLE: tuple[type, ...] = (
-    _Pure, _Map, _Filter, _AndThen, _Recover, _DivertTo, _BranchOn,
+    _Pure,
+    _Map,
+    _Filter,
+    _AndThen,
+    _Recover,
+    _DivertTo,
+    _BranchOn,
 )
 
 

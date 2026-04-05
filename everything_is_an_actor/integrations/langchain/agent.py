@@ -31,10 +31,10 @@ class LangChainAgent(AgentActor[I, O], Generic[I, O]):
             system_prompt = "Search and summarize."
     """
 
-    model: ClassVar[Any] = None               # BaseChatModel
-    tools: ClassVar[tuple] = ()                # tuple[BaseTool, ...]
+    model: ClassVar[Any] = None  # BaseChatModel
+    tools: ClassVar[tuple] = ()  # tuple[BaseTool, ...]
     system_prompt: ClassVar[str] = ""
-    output_parser: ClassVar[Any] = None        # BaseOutputParser | None
+    output_parser: ClassVar[Any] = None  # BaseOutputParser | None
     max_tool_rounds: ClassVar[int] = _MAX_TOOL_ROUNDS
 
     # Cached per-class (built once in __init_subclass__)
@@ -84,15 +84,15 @@ class LangChainAgent(AgentActor[I, O], Generic[I, O]):
                     tool_output = f"Error: unknown tool '{tc['name']}'"
                 else:
                     tool_output = await tool.ainvoke(tc["args"])
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.get("id", ""),
-                    "content": str(tool_output),
-                })
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.get("id", ""),
+                        "content": str(tool_output),
+                    }
+                )
         else:
-            raise RuntimeError(
-                f"{type(self).__name__}: tool call loop exceeded {self.max_tool_rounds} rounds"
-            )
+            raise RuntimeError(f"{type(self).__name__}: tool call loop exceeded {self.max_tool_rounds} rounds")
 
         content = response.content
 
