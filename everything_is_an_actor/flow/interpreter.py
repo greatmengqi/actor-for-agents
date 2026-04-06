@@ -135,9 +135,7 @@ class Interpreter:
                 return await self._interpret(otherwise_flow, value)
 
             case _Race(flows=flows):
-                return await ComposableFuture.race(
-                    *[ComposableFuture(self._interpret(f, input)) for f in flows]
-                )
+                return await ComposableFuture.race(*[ComposableFuture(self._interpret(f, input)) for f in flows])
 
             case _Recover(source=source, handler=handler):
                 try:
