@@ -90,6 +90,7 @@ class ActorContext:
         """Spawn a child actor supervised by this actor."""
         return await self._cell.spawn_child(actor_cls, name, mailbox_size=mailbox_size, middlewares=middlewares)
 
+
     async def stop_self(self) -> None:
         """Stop this actor (self) and remove from parent's children.
 
@@ -170,7 +171,9 @@ class ActorContext:
         """
         from everything_is_an_actor.core.composable_future import ComposableFuture
 
-        return ComposableFuture.sequence([self.ask(t, msg, timeout=timeout) for t, msg in tasks])
+        return ComposableFuture.sequence(
+            [self.ask(t, msg, timeout=timeout) for t, msg in tasks]
+        )
 
     def traverse(
         self,
@@ -198,7 +201,9 @@ class ActorContext:
 
         if not tasks:
             return ComposableFuture.failed(ValueError("race() requires at least one task"))
-        return ComposableFuture.first_completed(*(self.ask(t, msg, timeout=timeout) for t, msg in tasks))
+        return ComposableFuture.first_completed(
+            *(self.ask(t, msg, timeout=timeout) for t, msg in tasks)
+        )
 
     def zip(
         self,

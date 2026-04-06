@@ -1072,6 +1072,7 @@ class ComposableStream(Generic[T]):
 
         return ComposableStream(_gen()), StreamSender(queue, overflow, buffer_size)
 
+
     # =================================================================
     #  PROTOCOL
     # =================================================================

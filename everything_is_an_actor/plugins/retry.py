@@ -103,6 +103,9 @@ class IdempotentActorMixin:
         return result
 
 
+from everything_is_an_actor.core.composable_future import ComposableFuture as _CF
+
+
 async def ask_with_retry(
     ref,
     payload: Any,
