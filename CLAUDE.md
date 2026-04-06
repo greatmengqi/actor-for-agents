@@ -12,7 +12,7 @@ The codebase has five layers:
 everything_is_an_actor.integrations  ← LLM adapters (LangChain, OpenAI, Anthropic)
 everything_is_an_actor.flow          ← Flow ADT + categorical combinators + actor interpreter
 everything_is_an_actor.moa           ← MOA pattern library (moa_layer, moa_tree, MoASystem)
-everything_is_an_actor.agents        ← AI-specific (Task, AgentActor, streaming)
+everything_is_an_actor.agents        ← AI-specific (Task, AgentActor, streaming, A2A multi-turn)
 everything_is_an_actor.core          ← generic actor runtime (Actor, ActorRef, ActorSystem)
 ```
 
@@ -111,6 +111,15 @@ Design constraints:
 - `ref.stop()` + `await ref.join()` is the canonical cleanup pair
 - `dispatch_stream()` uses an async generator `try/finally` so cleanup runs even when the caller breaks early
 - Flow interpreter cleanup: each `_interpret_agent` spawns + stops in `try/finally`, then removes from `_root_cells`
+
+## A2A multi-turn protocol
+
+A2A support lives in `agents/` — no separate package. Two additions:
+
+- `AgentCard`: frozen dataclass on `AgentActor.__card__` — static capability metadata (skills, description). Agents without `__card__` work as before, just not discoverable
+- `discover(skill)` on `AgentSystem`: queries `_root_cells` for actors whose `__card__` declares the skill
+
+Multi-turn is a usage pattern, not a framework feature. Actor is already a state machine — `execute()` is called per message, `self` tracks conversation state, parent decides when the conversation is done via an ask loop. No new types, no new status, no framework involvement.
 
 ## Minimal public surface
 
