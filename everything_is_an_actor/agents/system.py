@@ -115,14 +115,22 @@ class AgentSystem:
     # ── Discovery ─────────────────────────────────────────────
 
     def _catalog(self) -> list[tuple[ActorRef, AgentCard]]:
-        """All spawned agents with their AgentCards."""
-        return [
-            (cell.ref, cell.actor_cls.__card__)
-            for cell in self._actor_system._root_cells.values()
-            if hasattr(cell, "actor_cls")
-            and hasattr(cell.actor_cls, "__card__")
-            and isinstance(cell.actor_cls.__card__, AgentCard)
-        ]
+        """All spawned agents with their AgentCards — root + children."""
+        results: list[tuple[ActorRef, AgentCard]] = []
+
+        def _walk(cells: dict) -> None:
+            for cell in cells.values():
+                if (
+                    hasattr(cell, "actor_cls")
+                    and hasattr(cell.actor_cls, "__card__")
+                    and isinstance(cell.actor_cls.__card__, AgentCard)
+                ):
+                    results.append((cell.ref, cell.actor_cls.__card__))
+                if hasattr(cell, "children"):
+                    _walk(cell.children)
+
+        _walk(self._actor_system._root_cells)
+        return results
 
     def discover_all(
         self,
