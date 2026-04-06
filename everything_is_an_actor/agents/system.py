@@ -13,9 +13,12 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from everything_is_an_actor.flow.flow import Flow
 
+from collections.abc import Callable
+
 from everything_is_an_actor.core.actor import Actor, MsgT, RetT
 from everything_is_an_actor.core.composable_future import ComposableFuture
 from everything_is_an_actor.agents.agent_actor import AgentActor
+from everything_is_an_actor.agents.card import AgentCard
 from everything_is_an_actor.agents.run_stream import RunStream, _run_event_sink, make_collector_cls
 from everything_is_an_actor.agents.task import Task, TaskEvent
 from everything_is_an_actor.core.mailbox import Mailbox
@@ -108,6 +111,65 @@ class AgentSystem:
 
         async for event in Interpreter(self).run_stream(flow, input):
             yield event
+
+    # ── Discovery ─────────────────────────────────────────────
+
+    def _catalog(self) -> list[tuple[ActorRef, AgentCard]]:
+        """All spawned agents with their AgentCards — root + children."""
+        results: list[tuple[ActorRef, AgentCard]] = []
+
+        def _walk(cells: dict) -> None:
+            for cell in cells.values():
+                if (
+                    hasattr(cell, "actor_cls")
+                    and hasattr(cell.actor_cls, "__card__")
+                    and isinstance(cell.actor_cls.__card__, AgentCard)
+                ):
+                    results.append((cell.ref, cell.actor_cls.__card__))
+                if hasattr(cell, "children"):
+                    _walk(cell.children)
+
+        _walk(self._actor_system._root_cells)
+        return results
+
+    def discover_all(
+        self,
+        match: Callable[[list[tuple[ActorRef, AgentCard]]], list[tuple[ActorRef, AgentCard]]],
+    ) -> list[tuple[ActorRef, AgentCard]]:
+        """Select agents from the catalog via a match function.
+
+        ``match`` receives all (ref, card) pairs and returns the selected subset.
+
+        Example::
+
+            system.discover_all(lambda agents: [
+                (r, c) for r, c in agents if "translation" in c.skills
+            ])
+        """
+        return match(self._catalog())
+
+    def discover_one(
+        self,
+        match: Callable[[list[tuple[ActorRef, AgentCard]]], tuple[ActorRef, AgentCard] | None],
+    ) -> tuple[ActorRef, AgentCard] | None:
+        """Select a single agent from the catalog via a match function.
+
+        ``match`` receives all (ref, card) pairs and returns the best one,
+        or None if no match.
+
+        Examples::
+
+            # By skill
+            system.discover_one(lambda agents:
+                next(((r, c) for r, c in agents if "translation" in c.skills), None)
+            )
+
+            # By score
+            system.discover_one(lambda agents:
+                max(agents, key=lambda rc: my_score(rc[1])) if agents else None
+            )
+        """
+        return match(self._catalog())
 
     # ── Delegated ActorSystem methods ───────────────────────
 
