@@ -352,13 +352,15 @@ class _ActorCell:
             # Sync actor + dispatcher: offload receive() via dispatcher.dispatch()
             async def _inner_handler(_ctx: ActorMailboxContext, message: Any) -> Any:
                 return await self._dispatcher.dispatch(  # type: ignore[union-attr]
-                    self.actor.receive, message,  # type: ignore[union-attr]
+                    self.actor.receive,
+                    message,  # type: ignore[union-attr]
                 )
         elif has_sync_receive:
             # Sync actor, no dispatcher: run receive() in default executor
             async def _inner_handler(_ctx: ActorMailboxContext, message: Any) -> Any:
                 return await ComposableFuture.from_blocking(
-                    self.actor.receive, message,  # type: ignore[union-attr]
+                    self.actor.receive,
+                    message,  # type: ignore[union-attr]
                 )
         elif self._dispatcher:
             # Async actor + dispatcher: bridge async handler into dispatcher thread
@@ -385,7 +387,8 @@ class _ActorCell:
         await self.actor.on_started()
 
         self._run_future, self._cancel_run = ComposableFuture.eager(
-            self._run(), name=f"actor:{self.path}",
+            self._run(),
+            name=f"actor:{self.path}",
         )
 
     async def enqueue(self, msg: _Envelope | _Stop) -> None:

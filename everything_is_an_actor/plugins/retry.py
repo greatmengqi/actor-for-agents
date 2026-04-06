@@ -103,7 +103,6 @@ class IdempotentActorMixin:
         return result
 
 
-
 async def ask_with_retry(
     ref,
     payload: Any,

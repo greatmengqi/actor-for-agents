@@ -175,15 +175,16 @@ class ComposableFuture(Generic[T]):
             pass  # No running loop — good, we're in a sync thread
         else:
             raise RuntimeError(
-                "ComposableFuture.result() called from within a running event loop. "
-                "Use 'await' instead."
+                "ComposableFuture.result() called from within a running event loop. Use 'await' instead."
             )
 
         # Sync thread — run in a fresh event loop
         if timeout is not None:
+
             async def _timed() -> T:
                 with anyio.fail_after(timeout):
                     return await self._resolve()
+
             return asyncio.run(_timed())
         return asyncio.run(self._resolve())
 
@@ -384,6 +385,7 @@ class ComposableFuture(Generic[T]):
             cf = ComposableFuture.from_executor(dispatcher.executor(), actor.receive, msg)
             result = await cf
         """
+
         async def _run() -> T:
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(executor, fn, *args)
@@ -399,6 +401,7 @@ class ComposableFuture(Generic[T]):
             cf = ComposableFuture.from_blocking(requests.get, url)
             result = await cf.map(lambda r: r.json())
         """
+
         async def _run() -> T:
             return await anyio.to_thread.run_sync(lambda: fn(*args))
 
@@ -581,24 +584,29 @@ class ComposableFuture(Generic[T]):
     @staticmethod
     def sleep(seconds: float) -> ComposableFuture[None]:
         """Async sleep wrapped as ComposableFuture."""
+
         async def _sleep() -> None:
             await anyio.sleep(seconds)
-        return ComposableFuture(_sleep())
 
+        return ComposableFuture(_sleep())
 
     def shield(self) -> ComposableFuture[T]:
         """Protect from cancellation.
 
         The inner computation continues even if the outer task is cancelled.
         """
+
         async def _shielded() -> T:
             with anyio.CancelScope(shield=True):
                 return await self._resolve()
+
         return self._wrap(_shielded())
 
     @staticmethod
     def eager(
-        coro: Coroutine[Any, Any, T], *, name: str | None = None,
+        coro: Coroutine[Any, Any, T],
+        *,
+        name: str | None = None,
     ) -> tuple[ComposableFuture[T], Callable[[], None]]:
         """Start a coroutine eagerly as a background task.
 
@@ -613,4 +621,3 @@ class ComposableFuture(Generic[T]):
             task.cancel()
 
         return ComposableFuture(task), _cancel
-

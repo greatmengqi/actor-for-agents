@@ -263,6 +263,7 @@ class ThreadedMailbox(Mailbox):
             raise MailboxClosed("mailbox closed")
         if self._backpressure_policy == BACKPRESSURE_BLOCK:
             from everything_is_an_actor.core.composable_future import ComposableFuture
+
             await ComposableFuture.from_blocking(self._blocking_put, msg)
             return True
         if self._backpressure_policy in (BACKPRESSURE_DROP_NEW, BACKPRESSURE_FAIL):
@@ -295,6 +296,7 @@ class ThreadedMailbox(Mailbox):
 
     async def get(self) -> Any:
         from everything_is_an_actor.core.composable_future import ComposableFuture
+
         return await ComposableFuture.from_blocking(self._blocking_get)
 
     def get_nowait(self) -> Any:
