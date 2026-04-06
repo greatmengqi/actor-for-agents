@@ -12,16 +12,16 @@ YAML（人类编写） ←→ Flow ADT ←→ JSON（机器传输）
 
 | 组合子 | YAML | JSON | Python |
 |--------|------|------|--------|
-| 单 agent | `agent: A` | `Agent` | `agent(A)` |
+| 单 agent | `agent: A` | `Agent(cls)` | `agent(A)` |
 | agent+参数 | `agent: {name: A, timeout: 30}` | `Agent(cls, timeout)` | `agent(A, timeout=30)` |
-| 顺序 | `steps: [A, B, C]` | `FlatMap(first, next)` | `a.flat_map(b)` |
-| 分发并行 | `each: [A, B]` | `Zip(left, right)` | `a.zip(b)` |
-| 广播并行 | `all: [A, B]` | `Broadcast(flows)` | `broadcast(a, b)` |
+| 顺序 | `flat_map: [A, B, C]` | `FlatMap(first, next)` | `a.flat_map(b)` |
+| 分发并行 | `zip: [A, B]` | `Zip(left, right)` | `a.zip(b)` |
+| 广播并行 | `broadcast: [A, B]` | `Broadcast(flows)` | `broadcast(a, b)` |
 | 竞争 | `race: [A, B, C]` | `Race(flows)` | `race(a, b, c)` |
 | 法定人数 | `at_least: {n: 2, flows: [A,B,C]}` | `AtLeast(n, flows)` | `at_least(2, a, b, c)` |
-| 类型路由 | `route: {source: X, mapping: {...}}` | `Branch(source, mapping)` | `x.branch({T: a})` |
-| 兜底 | `fallback: {primary: A, backup: B}` | `FallbackTo(source, fallback)` | `a.fallback_to(b)` |
-| 异常恢复 | `recover: {source: A, handler: B}` | `RecoverWith(source, handler)` | `a.recover_with(b)` |
+| 类型路由 | `branch: {source: X, mapping: {...}}` | `Branch(source, mapping)` | `x.branch({T: a})` |
+| 兜底 | `fallback_to: {source: A, fallback: B}` | `FallbackTo(source, fallback)` | `a.fallback_to(b)` |
+| 异常恢复 | `recover_with: {source: A, handler: B}` | `RecoverWith(source, handler)` | `a.recover_with(b)` |
 | 循环 | `loop: {body: A, max_iter: 10}` | `Loop(body, max_iter)` | `loop(a, max_iter=10)` |
 | 旁路通知 | `notify: {source: A, side: L}` | `Notify(source, side)` | `a.notify(l)` |
 | 同步副作用 | `tap: {source: A, side: T}` | `Tap(source, side)` | `a.tap(t)` |
@@ -43,14 +43,14 @@ YAML（人类编写） ←→ Flow ADT ←→ JSON（机器传输）
 
 | 组合子 | 输入行为 | 输出行为 |
 |--------|---------|---------|
-| steps (flat_map) | 上一步 output → 下一步 input | 最后一步的 output |
-| each (zip) | **拆 tuple**：`a_in, b_in = input` | `(a_out, b_out)` tuple |
-| all (broadcast) | **同一个 input** 给所有 | 全部结果 tuple |
+| flat_map | 上一步 output → 下一步 input | 最后一步的 output |
+| zip | **拆 tuple**：`a_in, b_in = input` | `(a_out, b_out)` tuple |
+| broadcast | **同一个 input** 给所有 | 全部结果 tuple |
 | race | **同一个 input** 给所有 | 最快的 output |
-| quorum (at_least) | **同一个 input** 给所有 | `QuorumResult(succeeded, failed)` |
-| route (branch) | source output 按类型路由 | 匹配分支的 output |
-| fallback | primary 和 backup 拿**同一个 input** | 成功方的 output |
-| recover | handler 拿 **Exception** 作为 input | handler 的 output |
+| at_least | **同一个 input** 给所有 | `QuorumResult(succeeded, failed)` |
+| branch | source output 按类型路由 | 匹配分支的 output |
+| fallback_to | source 和 fallback 拿**同一个 input** | 成功方的 output |
+| recover_with | handler 拿 **Exception** 作为 input | handler 的 output |
 | loop | `Continue(val)` → val 作下轮 input | `Done(val)` 的 val |
 | notify | source output 给 side（后台） | source output **不变** |
 | tap | source output 给 side（同步） | source output **不变** |
@@ -70,24 +70,27 @@ YAML（人类编写） ←→ Flow ADT ←→ JSON（机器传输）
 
 ```yaml
 flow: ResearchReport
-steps:
+flat_map:
   - at_least:
       n: 2
       flows:
         - agent: Google
         - agent: Bing
         - agent: DuckDuckGo
-  - all:
+  - broadcast:
       - agent: Researcher
       - agent: Analyst
-  - agent:
-      name: Writer
-      timeout: 60
-      fallback: BackupWriter
-      notify: AuditLogger
-      guard: QualityChecker
+  - guard:
+      source:
+        notify:
+          source:
+            fallback_to:
+              source: {agent: Writer, timeout: 60}
+              fallback: {agent: BackupWriter}
+          side: {agent: AuditLogger}
+      check: {agent: QualityChecker}
   - loop:
-      body: Reviewer
+      body: {agent: Reviewer}
       max_iter: 5
 ```
 
