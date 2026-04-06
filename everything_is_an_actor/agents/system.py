@@ -114,24 +114,39 @@ class AgentSystem:
 
     # ── Discovery ─────────────────────────────────────────────
 
-    def discover(self, match: Callable[[AgentCard], bool]) -> list[ActorRef]:
-        """Find spawned agents whose AgentCard satisfies the predicate.
+    def discover(
+        self,
+        match: Callable[[list[tuple[ActorRef, AgentCard]]], list[tuple[ActorRef, AgentCard]]],
+    ) -> list[tuple[ActorRef, AgentCard]]:
+        """Select agents from the catalog via a match function.
 
-        Scans root-level actors. Predicate-based — extensible to any
-        AgentCard field without changing this method.
+        ``match`` receives all (ref, card) pairs and returns the selected subset
+        (or a single-element list). The framework provides the catalog;
+        the selection strategy is entirely the caller's.
 
-        Example::
+        Examples::
 
-            system.discover(lambda c: "translation" in c.skills)
+            # Filter by skill
+            system.discover(lambda agents: [
+                (r, c) for r, c in agents if "translation" in c.skills
+            ])
+
+            # Pick the best one by score
+            system.discover(lambda agents: [
+                max(agents, key=lambda rc: my_score(rc[1]))
+            ])
+
+            # LLM-based selection
+            system.discover(lambda agents: llm.select(agents))
         """
-        return [
-            cell.ref
+        catalog = [
+            (cell.ref, cell.actor_cls.__card__)
             for cell in self._actor_system._root_cells.values()
             if hasattr(cell, "actor_cls")
             and hasattr(cell.actor_cls, "__card__")
             and isinstance(cell.actor_cls.__card__, AgentCard)
-            and match(cell.actor_cls.__card__)
         ]
+        return match(catalog)
 
     # ── Delegated ActorSystem methods ───────────────────────
 

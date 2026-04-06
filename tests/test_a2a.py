@@ -74,9 +74,9 @@ class TestDiscover:
         await system.spawn(SearchAgent, "s1")
         await system.spawn(PlainAgent, "p1")
 
-        refs = system.discover(lambda c: "translation" in c.skills)
-        assert len(refs) == 1
-        assert refs[0].name == "t1"
+        results = system.discover(lambda agents: [(r, c) for r, c in agents if "translation" in c.skills])
+        assert len(results) == 1
+        assert results[0][0].name == "t1"
 
         await system.shutdown()
 
@@ -85,9 +85,9 @@ class TestDiscover:
         await system.spawn(TranslateAgent, "t1")
         await system.spawn(SearchAgent, "s1")
 
-        refs = system.discover(lambda c: "web" in c.description.lower())
-        assert len(refs) == 1
-        assert refs[0].name == "s1"
+        results = system.discover(lambda agents: [(r, c) for r, c in agents if "web" in c.description.lower()])
+        assert len(results) == 1
+        assert results[0][0].name == "s1"
 
         await system.shutdown()
 
@@ -96,8 +96,8 @@ class TestDiscover:
         await system.spawn(TranslateAgent, "t1")
         await system.spawn(SearchAgent, "s1")
 
-        refs = system.discover(lambda c: len(c.skills) >= 2)
-        assert len(refs) == 2
+        results = system.discover(lambda agents: [(r, c) for r, c in agents if len(c.skills) >= 2])
+        assert len(results) == 2
 
         await system.shutdown()
 
@@ -105,19 +105,19 @@ class TestDiscover:
         system = AgentSystem(ActorSystem())
         await system.spawn(TranslateAgent, "t1")
 
-        refs = system.discover(lambda c: "nonexistent" in c.skills)
-        assert refs == []
+        results = system.discover(lambda agents: [(r, c) for r, c in agents if "nonexistent" in c.skills])
+        assert results == []
 
         await system.shutdown()
 
-    async def test_discover_skips_agents_without_card(self):
+    async def test_discover_select_best(self):
+        """Match function picks ONE from many — selection, not filter."""
         system = AgentSystem(ActorSystem())
-        await system.spawn(PlainAgent, "p1")
+        await system.spawn(TranslateAgent, "t1")
+        await system.spawn(SearchAgent, "s1")
 
-        refs = system.discover(lambda c: True)
-        # PlainAgent has default empty card — predicate matches, but skills empty
-        # It IS discoverable (has default card), just has no skills
-        assert len(refs) == 1
+        results = system.discover(lambda agents: [max(agents, key=lambda rc: len(rc[1].skills))])
+        assert len(results) == 1
 
         await system.shutdown()
 
@@ -126,9 +126,11 @@ class TestDiscover:
         await system.spawn(TranslateAgent, "t1")
         await system.spawn(SearchAgent, "s1")
 
-        refs = system.discover(lambda c: "translation" in c.skills and "summarization" in c.skills)
-        assert len(refs) == 1
-        assert refs[0].name == "t1"
+        results = system.discover(
+            lambda agents: [(r, c) for r, c in agents if "translation" in c.skills and "summarization" in c.skills]
+        )
+        assert len(results) == 1
+        assert results[0][0].name == "t1"
 
         await system.shutdown()
 
