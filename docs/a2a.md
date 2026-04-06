@@ -32,10 +32,17 @@ Agents without `__card__` work normally — they just won't appear in `discover(
 
 ## Discovery
 
-Find running agents by skill:
+Find running agents by predicate on AgentCard:
 
 ```python
-refs = system.discover("translation")
+# By skill
+refs = system.discover(lambda c: "translation" in c.skills)
+
+# By description
+refs = system.discover(lambda c: "Chinese" in c.description)
+
+# Combined
+refs = system.discover(lambda c: "translation" in c.skills and len(c.skills) > 1)
 ```
 
 ## Multi-Turn Pattern
