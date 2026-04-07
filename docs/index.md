@@ -25,6 +25,8 @@ The actor model solves all of these. `everything-is-an-actor` brings it to Pytho
 | **MOA** (`everything_is_an_actor.moa`) | Mixture-of-Agents pattern: parallel proposers → quorum → aggregation |
 | **Integrations** (`everything_is_an_actor.integrations`) | External framework adapters (LangChain) |
 
+The project also introduces an original `Flow` model for agent orchestration: a typed `Flow[I, O]` semantic core that can be represented equivalently in Python, `YAML`, and `JSON`, while graph remains a derived view for visualization and execution inspection.
+
 ---
 
 ## Install
