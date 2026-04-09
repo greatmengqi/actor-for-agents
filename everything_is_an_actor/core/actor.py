@@ -1,3 +1,21 @@
+# Copyright (c) 2025 everything-is-an-actor contributors
+#
+# This file is part of actor-for-agents, a multi-language agent runtime system.
+# The core/ components are licensed under the Business Source License 1.1 (BSL).
+# See LICENSE file in core/ directory for details.
+#
+# Permitted uses:
+# - Enterprise internal deployment
+# - Personal learning/research
+# - Fork for secondary development (not for selling competing SaaS)
+# - Embedded as a component in your product
+#
+# Prohibited uses:
+# - Building a competing "XX Agent Runtime Cloud" service
+# - White-labeling as a standalone commercial product
+#
+# After 4 years from first publication, this will convert to Apache 2.0.
+
 """Actor base class and per-actor context."""
 
 from __future__ import annotations

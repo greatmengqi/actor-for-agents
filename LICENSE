@@ -1,21 +1,52 @@
-MIT License
+# actor-for-agents License Information
+
+actor-for-agents 是一个多语言智能体运行时系统，采用**多许可证架构**。
+
+## 组件许可证概览
+
+| 组件 | 许可证 | 说明 |
+|------|--------|------|
+| `core/` (Actor Runtime) | BSL 1.1 | 核心引擎，防止竞品白嫖 |
+| `flow/` (Flow ADT) | BSL 1.1 | 核心编排层，和 runtime 一体 |
+| `agents/` (AgentActor) | BSL 1.1 | 核心 agent 抽象 |
+| `moa/` (MOA 模式库) | BSL 1.1 | 核心模式库 |
+| `integrations/` (Provider 适配器) | Apache 2.0 | 让社区自由贡献 provider 适配器 |
+| `examples/` (示例代码) | Apache 2.0 | 鼓励传播 |
+| `docs/` (文档) | Apache 2.0 | 鼓励传播 |
+| `cluster/` (分布式调度) | 商业许可证 | 纯商业版，不开源 |
+| `enterprise/` (SSO/审计/K8s Operator) | 商业许可证 | 纯商业版，不开源 |
+
+## Business Source License (BSL) - 核心组件
+
+核心组件 (`core/`, `flow/`, `agents/`, `moa/`) 采用 Business Source License 1.1。
+
+### 允许的使用
+
+- 企业内部部署使用
+- 个人学习 / 研究
+- fork 做二次开发（不对外卖竞品 SaaS）
+- 作为组件嵌入自己的产品
+
+### 禁止的使用
+
+- 拿去做一个"XX Agent Runtime Cloud"卖给别人
+- 提供类似 actor-for-agents 的商业 SaaS 服务
+- 白牌化后作为独立产品销售
+
+### 转换条款
+
+自首次发布之日起四年后，BSL 许可证将转换为 Apache License 2.0。
+
+## Apache License 2.0 - 社区友好组件
+
+`integrations/`, `examples/`, `docs/` 采用 Apache License 2.0，允许自由使用、修改和分发。
+
+## 商业许可证 - 企业级组件
+
+`cluster/` 和 `enterprise/` 不开源，需要单独的商业授权。
+
+---
 
 Copyright (c) 2025 everything-is-an-actor contributors
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+各个组件的详细许可证条款请参考各组件目录下的 LICENSE 文件。
