@@ -132,6 +132,23 @@ Multi-turn is a usage pattern, not a framework feature. Actor is already a state
 - No blocking calls inside the actor loop — use `context.run_in_executor(fn, *args)` for blocking I/O or CPU-bound work
 - Do not use `time.sleep` — use `asyncio.sleep`
 
+## Python compatibility floor: 3.12
+
+`pyproject.toml` declares `requires-python = ">=3.12"`. Any contribution must
+run on a stock 3.12 interpreter — do NOT use 3.13+-only features
+(e.g. PEP 702 `@deprecated`, PEP 705 `ReadOnly` TypedDict, `copy.replace`,
+the new free-threaded build flags).
+
+3.12 features are in scope and may be used freely:
+- PEP 695 generic syntax — `class Foo[T]:`, `def f[T](...)`, `type Alias = ...`
+- PEP 692 `TypedDict` unpacking in `**kwargs`
+- `typing.override` decorator
+- `asyncio.TaskGroup`, `typing.Self`
+
+Existing code uses the classic `TypeVar` / `Generic[T]` / `Protocol[T]` forms
+for historical reasons; both styles are equivalent at runtime, mix freely.
+Do not run a stylistic migration just to switch forms.
+
 ## Dispatcher is for blocking work only
 
 `Dispatcher` (and `PoolDispatcher`) exist solely to offload **blocking sync
