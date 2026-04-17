@@ -17,16 +17,23 @@ else:
 
 MsgT = TypeVar("MsgT")
 RetT = TypeVar("RetT")
+ItemT_co = TypeVar("ItemT_co", covariant=True)
 
 
 @runtime_checkable
-class StreamAdapter(Protocol):
+class StreamAdapter(Protocol[ItemT_co]):
     """Extension point: how a higher layer turns a single ask into a stream.
 
     ``core/`` has no notion of ``Task``/``StreamEvent``/``RunStream`` — those
     belong to ``agents/``. Streaming is therefore modelled as an adapter
     installed on ``ActorSystem._stream_adapter``. ``ActorRef._ask_stream``
     delegates to it so the reverse dependency never exists.
+
+    The protocol is parameterised on ``ItemT_co`` so concrete adapters
+    preserve item-type information end-to-end:
+    ``AgentStreamAdapter(StreamAdapter[StreamItem])`` rather than widening
+    every consumer to ``Any``. ``ItemT_co`` is covariant — items are produced,
+    not consumed, by the iterator.
 
     ``AgentSystem`` installs an ``AgentStreamAdapter`` automatically.
     """
@@ -37,7 +44,7 @@ class StreamAdapter(Protocol):
         message: Any,
         *,
         timeout: float,
-    ) -> AsyncIterator[Any]:
+    ) -> AsyncIterator[ItemT_co]:
         """Open a stream for a single ask. Must be an async generator."""
         ...
 
