@@ -209,7 +209,9 @@ class ActorSystem:
             try:
                 cb(dl)
             except Exception:
-                pass
+                # Isolate callbacks: a failing one must not block subsequent
+                # ones, and must not silently swallow the dead letter signal.
+                logger.exception("Dead letter callback failed")
         logger.debug("Dead letter: %s → %s", type(message).__name__, recipient.path)
 
     def on_dead_letter(self, callback: Any) -> None:
@@ -625,6 +627,12 @@ class _ActorCell:
                 logger.warning("on_stopped cancelled for %s, retrying once", self.path)
                 try:
                     await _timed(self.actor.on_stopped())
+                except asyncio.CancelledError:
+                    # CancelledError is BaseException (3.8+), not Exception —
+                    # the bare except below would let it escape silently into
+                    # the outer shield. Log explicitly so the retry's outcome
+                    # is observable, then give up (we promise *one* retry).
+                    logger.error("on_stopped retry also cancelled for %s — giving up", self.path)
                 except Exception:
                     logger.exception("on_stopped retry failed for %s", self.path)
             except Exception:
